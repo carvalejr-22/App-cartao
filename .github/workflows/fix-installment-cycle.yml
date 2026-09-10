@@ -151,11 +151,6 @@ jobs:
           g = g.replace('versionCode = 4', 'versionCode = 5', 1)
           g = g.replace('versionName = "0.4.0"', 'versionName = "0.4.1"', 1)
           gradle.write_text(g)
-
-          workflow = Path('.github/workflows/build-apk.yml')
-          w = workflow.read_text()
-          w = w.replace('name: App-cartao-v0.4.0', 'name: App-cartao-v0.4.1', 1)
-          workflow.write_text(w)
           PY
 
       - name: Commit fix
@@ -163,6 +158,6 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add app/src/main/java/com/carlos/appcartao/MainActivity.kt app/build.gradle.kts .github/workflows/build-apk.yml
+          git add app/src/main/java/com/carlos/appcartao/MainActivity.kt app/build.gradle.kts
           git commit -m "Fix installment invoice numbering and migration"
           git push

@@ -3,7 +3,6 @@
     <application
         android:allowBackup="false"
         android:fullBackupContent="false"
-        android:appCategory="finance"
         android:hasFragileUserData="true"
         android:icon="@drawable/ic_launcher"
         android:roundIcon="@drawable/ic_launcher"

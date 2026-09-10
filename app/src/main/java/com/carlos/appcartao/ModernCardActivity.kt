@@ -259,6 +259,20 @@ private fun ModernCreditCardApp(store: ModernSecureStore) {
                     onSaveCard = { updated ->
                         persist(data.copy(cards = data.cards.map { if (it.id == updated.id) updated else it }))
                     },
+                    onDeleteCard = { cardId ->
+                        val mainCardId = data.cards.first().id
+                        if (cardId != mainCardId && data.cards.size > 1) {
+                            val remainingCards = data.cards.filterNot { it.id == cardId }
+                            val nextActiveId = if (data.activeCardId == cardId) mainCardId else data.activeCardId
+                            persist(
+                                data.copy(
+                                    cards = remainingCards,
+                                    activeCardId = nextActiveId,
+                                    purchases = data.purchases.filterNot { it.cardId == cardId }
+                                )
+                            )
+                        }
+                    },
                     onCategoriesChanged = { categories -> persist(data.copy(categories = categories)) }
                 )
             }
@@ -287,6 +301,7 @@ private fun ModernHomeScreen(
     var note by remember { mutableStateOf("") }
     var date by remember { mutableStateOf(today) }
     var showCategories by remember { mutableStateOf(false) }
+    var showCardPicker by remember { mutableStateOf(false) }
     var isInstallment by remember { mutableStateOf(false) }
     var installmentCount by remember { mutableStateOf("12") }
     var error by remember { mutableStateOf<String?>(null) }
@@ -297,14 +312,17 @@ private fun ModernHomeScreen(
         verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
         item { Spacer(Modifier.height(4.dp)) }
-        item {
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(24.dp),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primary)
-            ) {
-                Column(modifier = Modifier.padding(20.dp)) {
-                    Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        if (data.cards.size > 1) {
+            item {
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(24.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primary)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(20.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
                         Column(modifier = Modifier.weight(1f)) {
                             Text("Total das faturas atuais", color = Color.White.copy(alpha = .78f))
                             Text(
@@ -314,70 +332,55 @@ private fun ModernHomeScreen(
                                 color = Color.White
                             )
                         }
-                        TextButton(
-                            onClick = onAddCard,
-                            modifier = Modifier.size(42.dp)
-                        ) {
+                        TextButton(onClick = onAddCard, modifier = Modifier.size(42.dp)) {
                             Text("+", color = Color.White, fontSize = 28.sp, fontWeight = FontWeight.Light)
                         }
                     }
-                    if (data.cards.size > 1) {
-                        Spacer(Modifier.height(6.dp))
-                        Text("${data.cards.size} cartões incluídos", color = Color.White.copy(alpha = .72f), style = MaterialTheme.typography.bodySmall)
-                    }
                 }
             }
-        }
-
-        if (data.cards.size > 1) {
             item {
-                Text("Cartões", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-                Row(
-                    modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                FilledTonalButton(
+                    onClick = { showCardPicker = true },
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(14.dp)
                 ) {
-                    data.cards.forEach { card ->
-                        val period = modernInvoiceForPurchase(today, card)
-                        val total = modernPurchasesForPeriod(data.purchases, card.id, period).sumOf { it.amountCents }
-                        val selected = card.id == activeCard.id
-                        FilledTonalButton(
-                            onClick = { onSelectCard(card.id) },
-                            shape = RoundedCornerShape(16.dp),
-                            colors = ButtonDefaults.filledTonalButtonColors(
-                                containerColor = if (selected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surface
-                            )
-                        ) {
-                            Column(horizontalAlignment = Alignment.Start) {
-                                Text(card.name, fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium)
-                                Text(formatModernMoney(total), style = MaterialTheme.typography.labelSmall, color = Color(0xFF667085))
+                    Text(activeCard.name, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Text("Trocar", style = MaterialTheme.typography.labelLarge)
+                }
+            }
+        } else {
+            item {
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(24.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primary)
+                ) {
+                    Column(modifier = Modifier.padding(20.dp)) {
+                        Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(activeCard.name, color = Color.White.copy(alpha = .78f))
+                                Text(
+                                    formatModernMoney(cardTotal),
+                                    style = MaterialTheme.typography.headlineLarge,
+                                    fontWeight = FontWeight.Bold,
+                                    color = Color.White
+                                )
+                            }
+                            TextButton(onClick = onAddCard, modifier = Modifier.size(42.dp)) {
+                                Text("+", color = Color.White, fontSize = 28.sp, fontWeight = FontWeight.Light)
                             }
                         }
-                    }
-                }
-            }
-        }
-
-        item {
-            Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(20.dp)) {
-                Column(modifier = Modifier.padding(16.dp)) {
-                    Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(activeCard.name, color = Color(0xFF667085))
-                            Text(formatModernMoney(cardTotal), style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+                        Spacer(Modifier.height(12.dp))
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                            CompactInfoLight("Fecha", modernDayLabel(currentPeriod.end))
+                            CompactInfoLight("Vence", modernDayLabel(currentPeriod.dueDate))
+                            CompactInfoLight("Melhor compra", modernDayLabel(currentPeriod.end.plusDays(1)))
                         }
-                        Text("Fatura atual", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.SemiBold)
-                    }
-                    Spacer(Modifier.height(12.dp))
-                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                        CompactInfo("Fecha", modernDayLabel(currentPeriod.end))
-                        CompactInfo("Vence", modernDayLabel(currentPeriod.dueDate))
-                        CompactInfo("Melhor compra", modernDayLabel(currentPeriod.end.plusDays(1)))
                     }
                 }
             }
         }
 
-        item { Text("Nova compra • ${activeCard.name}", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold) }
         item {
             OutlinedTextField(
                 value = amount,
@@ -517,6 +520,30 @@ private fun ModernHomeScreen(
         item { Spacer(Modifier.height(12.dp)) }
     }
 
+    if (showCardPicker) {
+        AlertDialog(
+            onDismissRequest = { showCardPicker = false },
+            title = { Text("Cartão da compra") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    data.cards.forEach { card ->
+                        TextButton(
+                            onClick = {
+                                onSelectCard(card.id)
+                                showCardPicker = false
+                            },
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text(card.name, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            if (card.id == activeCard.id) Text("✓", color = MaterialTheme.colorScheme.primary)
+                        }
+                    }
+                }
+            },
+            confirmButton = { TextButton(onClick = { showCardPicker = false }) { Text("Fechar") } }
+        )
+    }
+
     if (showCategories) {
         AlertDialog(
             onDismissRequest = { showCategories = false },
@@ -538,6 +565,14 @@ private fun ModernHomeScreen(
             },
             confirmButton = { TextButton(onClick = { showCategories = false }) { Text("Fechar") } }
         )
+    }
+}
+
+@Composable
+private fun CompactInfoLight(title: String, value: String) {
+    Column {
+        Text(title, style = MaterialTheme.typography.labelSmall, color = Color.White.copy(alpha = .70f))
+        Text(value, fontWeight = FontWeight.Bold, color = Color.White)
     }
 }
 
@@ -1103,6 +1138,7 @@ private fun ModernSettingsScreen(
     data: ModernAppData,
     onSelectCard: (String) -> Unit,
     onSaveCard: (ModernCardProfile) -> Unit,
+    onDeleteCard: (String) -> Unit,
     onCategoriesChanged: (List<String>) -> Unit
 ) {
     val card = data.cards.firstOrNull { it.id == data.activeCardId } ?: data.cards.first()
@@ -1111,7 +1147,9 @@ private fun ModernSettingsScreen(
     var dueDay by remember(card.id, card.dueDay) { mutableStateOf(card.dueDay.toString()) }
     var message by remember(card.id) { mutableStateOf<String?>(null) }
     var newCategory by remember { mutableStateOf("") }
+    var confirmDeleteCard by remember(card.id) { mutableStateOf(false) }
     val current = modernInvoiceForPurchase(LocalDate.now(), card)
+    val isMainCard = card.id == data.cards.first().id
 
     LazyColumn(modifier = Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         item { Spacer(Modifier.height(6.dp)) }
@@ -1175,6 +1213,15 @@ private fun ModernSettingsScreen(
                         modifier = Modifier.fillMaxWidth().height(52.dp),
                         shape = RoundedCornerShape(16.dp)
                     ) { Text("Salvar cartão", fontWeight = FontWeight.Bold) }
+                    if (!isMainCard && data.cards.size > 1) {
+                        OutlinedButton(
+                            onClick = { confirmDeleteCard = true },
+                            modifier = Modifier.fillMaxWidth().height(50.dp),
+                            shape = RoundedCornerShape(16.dp)
+                        ) {
+                            Text("Remover cartão", color = Color(0xFFB42318))
+                        }
+                    }
                     message?.let { Text(it, color = MaterialTheme.colorScheme.primary) }
                 }
             }
@@ -1239,6 +1286,23 @@ private fun ModernSettingsScreen(
             }
         }
         item { Spacer(Modifier.height(16.dp)) }
+    }
+
+    if (confirmDeleteCard && !isMainCard) {
+        AlertDialog(
+            onDismissRequest = { confirmDeleteCard = false },
+            title = { Text("Remover ${card.name}?") },
+            text = { Text("O cartão e os lançamentos vinculados a ele serão removidos deste dispositivo. O cartão principal será mantido.") },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        confirmDeleteCard = false
+                        onDeleteCard(card.id)
+                    }
+                ) { Text("Remover", color = Color(0xFFB42318)) }
+            },
+            dismissButton = { TextButton(onClick = { confirmDeleteCard = false }) { Text("Cancelar") } }
+        )
     }
 }
 

@@ -243,7 +243,13 @@ class GoogleDriveSync(private val context: Context) {
     ): String {
         val connection = URL(url).openConnection() as HttpURLConnection
         try {
-            connection.requestMethod = method
+            // java.net.HttpURLConnection on Android only accepts the classic HTTP
+            // verbs directly. Google APIs officially support this override when
+            // PATCH cannot be sent by the client.
+            connection.requestMethod = if (method == "PATCH") "POST" else method
+            if (method == "PATCH") {
+                connection.setRequestProperty("X-HTTP-Method-Override", "PATCH")
+            }
             connection.connectTimeout = 15_000
             connection.readTimeout = 20_000
             connection.setRequestProperty("Authorization", "Bearer $accessToken")

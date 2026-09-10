@@ -21,7 +21,6 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.layout.weight
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
@@ -47,6 +46,7 @@ import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.LocalGasStation
 import androidx.compose.material.icons.filled.LocalParking
 import androidx.compose.material.icons.filled.Medication
+import androidx.compose.material.icons.filled.Repeat
 import androidx.compose.material.icons.filled.Restaurant
 import androidx.compose.material.icons.filled.School
 import androidx.compose.material.icons.filled.Settings
@@ -110,6 +110,8 @@ import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
 import kotlin.math.max
 
+private const val DATA_VERSION = 2
+
 private val AppColors = lightColorScheme(
     primary = Color(0xFF135D54),
     onPrimary = Color.White,
@@ -145,8 +147,14 @@ data class Purchase(
     val note: String = "",
     val invoiceStartEpochDay: Long? = null,
     val invoiceEndEpochDay: Long? = null,
-    val invoiceDueEpochDay: Long? = null
-)
+    val invoiceDueEpochDay: Long? = null,
+    val installmentGroupId: String? = null,
+    val installmentNumber: Int? = null,
+    val installmentTotal: Int? = null
+) {
+    val isInstallment: Boolean
+        get() = installmentGroupId != null && installmentNumber != null && installmentTotal != null && installmentTotal > 1
+}
 
 data class CardSettings(
     val closingDay: Int = 5,
@@ -232,8 +240,8 @@ private fun CreditCardApp(store: SecureStore) {
             when (screen) {
                 Screen.HOME -> HomeScreen(
                     data = data,
-                    onAdd = { purchase ->
-                        persist(data.copy(purchases = data.purchases + assignInvoice(purchase, data.settings)))
+                    onAdd = { newPurchases ->
+                        persist(data.copy(purchases = data.purchases + newPurchases))
                     }
                 )
 
@@ -267,7 +275,7 @@ private fun CreditCardApp(store: SecureStore) {
 }
 
 @Composable
-private fun HomeScreen(data: AppData, onAdd: (Purchase) -> Unit) {
+private fun HomeScreen(data: AppData, onAdd: (List<Purchase>) -> Unit) {
     val today = LocalDate.now()
     val period = invoiceForPurchase(today, data.settings)
     val total = purchasesForPeriod(data.purchases, period, data.settings).sumOf { it.amountCents }
@@ -277,6 +285,8 @@ private fun HomeScreen(data: AppData, onAdd: (Purchase) -> Unit) {
     var note by remember { mutableStateOf("") }
     var date by remember { mutableStateOf(today) }
     var categoryOpen by remember { mutableStateOf(false) }
+    var isInstallment by remember { mutableStateOf(false) }
+    var installmentCount by remember { mutableStateOf("12") }
     var error by remember { mutableStateOf<String?>(null) }
     val context = androidx.compose.ui.platform.LocalContext.current
 
@@ -285,9 +295,7 @@ private fun HomeScreen(data: AppData, onAdd: (Purchase) -> Unit) {
         verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
         item { Spacer(Modifier.height(4.dp)) }
-        item {
-            Text("Seu controle financeiro, simples e offline", color = Color(0xFF667085))
-        }
+        item { Text("Seu controle financeiro, simples e offline", color = Color(0xFF667085)) }
         item {
             Card(
                 modifier = Modifier.fillMaxWidth(),
@@ -321,16 +329,14 @@ private fun HomeScreen(data: AppData, onAdd: (Purchase) -> Unit) {
                 }
             }
         }
-        item {
-            Text("Nova compra", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
-        }
+        item { Text("Nova compra", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold) }
         item {
             OutlinedTextField(
                 value = amount,
                 onValueChange = { amount = it; error = null },
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(16.dp),
-                label = { Text("Valor da compra") },
+                label = { Text(if (isInstallment) "Valor de cada parcela" else "Valor da compra") },
                 prefix = { Text("R$ ") },
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
                 singleLine = true
@@ -370,6 +376,43 @@ private fun HomeScreen(data: AppData, onAdd: (Purchase) -> Unit) {
             )
         }
         item {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(16.dp),
+                colors = CardDefaults.cardColors(
+                    containerColor = if (isInstallment) MaterialTheme.colorScheme.secondaryContainer else MaterialTheme.colorScheme.surface
+                )
+            ) {
+                Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Default.Repeat, contentDescription = null, tint = MaterialTheme.colorScheme.secondary)
+                        Spacer(Modifier.width(10.dp))
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("Compra parcelada", fontWeight = FontWeight.SemiBold)
+                            Text(
+                                "Repete o valor automaticamente nas próximas faturas",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = Color(0xFF667085)
+                            )
+                        }
+                        Switch(checked = isInstallment, onCheckedChange = { isInstallment = it; error = null })
+                    }
+                    if (isInstallment) {
+                        Spacer(Modifier.height(8.dp))
+                        OutlinedTextField(
+                            value = installmentCount,
+                            onValueChange = { installmentCount = it.filter(Char::isDigit).take(2); error = null },
+                            modifier = Modifier.fillMaxWidth(),
+                            label = { Text("Número de parcelas") },
+                            suffix = { Text("x") },
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                            singleLine = true
+                        )
+                    }
+                }
+            }
+        }
+        item {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 FilledTonalButton(onClick = { date = today }, modifier = Modifier.weight(1f)) {
                     Text(if (date == today) "Hoje ✓" else "Hoje")
@@ -397,14 +440,30 @@ private fun HomeScreen(data: AppData, onAdd: (Purchase) -> Unit) {
             Button(
                 onClick = {
                     val cents = parseMoneyToCents(amount)
-                    if (cents == null || cents <= 0) {
-                        error = "Digite um valor válido. Ex.: 49,90"
-                    } else {
-                        onAdd(Purchase(amountCents = cents, purchaseDate = date, category = category, note = note.trim()))
-                        amount = ""
-                        note = ""
-                        date = LocalDate.now()
-                        error = null
+                    val parcels = if (isInstallment) installmentCount.toIntOrNull() else 1
+                    when {
+                        cents == null || cents <= 0 -> error = "Digite um valor válido. Ex.: 228,38"
+                        parcels == null || parcels !in 2..60 -> error = "Informe entre 2 e 60 parcelas."
+                        else -> {
+                            val base = Purchase(
+                                amountCents = cents,
+                                purchaseDate = date,
+                                category = category,
+                                note = note.trim()
+                            )
+                            val newPurchases = if (parcels == 1) {
+                                listOf(assignInvoice(base, data.settings))
+                            } else {
+                                buildInstallmentSeries(base, parcels, data.settings)
+                            }
+                            onAdd(newPurchases)
+                            amount = ""
+                            note = ""
+                            date = LocalDate.now()
+                            isInstallment = false
+                            installmentCount = "12"
+                            error = null
+                        }
                     }
                 },
                 modifier = Modifier.fillMaxWidth().height(52.dp),
@@ -413,7 +472,7 @@ private fun HomeScreen(data: AppData, onAdd: (Purchase) -> Unit) {
             ) {
                 Icon(Icons.Default.Add, contentDescription = null)
                 Spacer(Modifier.width(8.dp))
-                Text("Salvar compra", fontWeight = FontWeight.Bold)
+                Text(if (isInstallment) "Salvar parcelas" else "Salvar compra", fontWeight = FontWeight.Bold)
             }
         }
         item { Spacer(Modifier.height(10.dp)) }
@@ -438,8 +497,9 @@ private fun InvoiceScreen(
 ) {
     val periods = availableInvoicePeriods(data)
     val currentPeriod = invoiceForPurchase(LocalDate.now(), data.settings)
-    var selectedEnd by remember(periods) { mutableStateOf(periods.firstOrNull()?.end ?: currentPeriod.end) }
-    val selectedIndex = periods.indexOfFirst { it.end == selectedEnd }.coerceAtLeast(0)
+    var selectedEnd by remember { mutableStateOf(currentPeriod.end) }
+    val selectedIndexRaw = periods.indexOfFirst { it.end == selectedEnd }
+    val selectedIndex = if (selectedIndexRaw >= 0) selectedIndexRaw else periods.indexOfFirst { it.end == currentPeriod.end }.coerceAtLeast(0)
     val period = periods.getOrElse(selectedIndex) { currentPeriod }
     val purchases = purchasesForPeriod(data.purchases, period, data.settings)
         .sortedWith(compareByDescending<Purchase> { it.purchaseDate }.thenByDescending { it.createdAtMillis })
@@ -454,10 +514,7 @@ private fun InvoiceScreen(
             Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 Column(modifier = Modifier.weight(1f)) {
                     Text("Faturas", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
-                    Text(
-                        if (period.end.isBefore(LocalDate.now())) "Fatura fechada e armazenada" else "Fatura atual",
-                        color = Color(0xFF667085)
-                    )
+                    Text(periodStatus(period, currentPeriod), color = Color(0xFF667085))
                 }
                 Box {
                     FilledTonalButton(onClick = { invoiceMenuOpen = true }) {
@@ -483,12 +540,23 @@ private fun InvoiceScreen(
             }
         }
         item {
-            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
                 IconButton(
                     onClick = { if (selectedIndex < periods.lastIndex) selectedEnd = periods[selectedIndex + 1].end },
                     enabled = selectedIndex < periods.lastIndex
                 ) { Icon(Icons.Default.ChevronLeft, contentDescription = "Fatura anterior") }
-                Text("${formatDate(period.start)} a ${formatDate(period.end)}", fontWeight = FontWeight.SemiBold)
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text(invoiceMonthLabel(period), fontWeight = FontWeight.Bold)
+                    Text(
+                        "Compras ${formatDate(period.start)} a ${formatDate(period.end.minusDays(1))}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = Color(0xFF667085)
+                    )
+                }
                 IconButton(
                     onClick = { if (selectedIndex > 0) selectedEnd = periods[selectedIndex - 1].end },
                     enabled = selectedIndex > 0
@@ -505,7 +573,7 @@ private fun InvoiceScreen(
                     Text("Total da fatura", color = Color(0xFF475467))
                     Text(formatMoney(total), style = MaterialTheme.typography.headlineLarge, fontWeight = FontWeight.Bold)
                     Spacer(Modifier.height(4.dp))
-                    Text("Vencimento ${formatDate(period.dueDate)}")
+                    Text("Fecha ${formatDate(period.end)} • vence ${formatDate(period.dueDate)}")
                 }
             }
         }
@@ -530,8 +598,16 @@ private fun InvoiceScreen(
     pendingDelete?.let { purchase ->
         AlertDialog(
             onDismissRequest = { pendingDelete = null },
-            title = { Text("Excluir compra?") },
-            text = { Text("${purchase.note.ifBlank { purchase.category }} — ${formatMoney(purchase.amountCents)}") },
+            title = { Text(if (purchase.isInstallment) "Excluir esta parcela?" else "Excluir compra?") },
+            text = {
+                Text(
+                    if (purchase.isInstallment) {
+                        "Será excluída apenas a parcela ${purchase.installmentNumber}/${purchase.installmentTotal} de ${purchase.note.ifBlank { purchase.category }}."
+                    } else {
+                        "${purchase.note.ifBlank { purchase.category }} — ${formatMoney(purchase.amountCents)}"
+                    }
+                )
+            },
             confirmButton = {
                 TextButton(onClick = { onDelete(purchase.id); pendingDelete = null }) { Text("Excluir") }
             },
@@ -555,21 +631,50 @@ private fun InvoiceScreen(
 
 @Composable
 private fun PurchaseRow(purchase: Purchase, onEdit: () -> Unit, onDelete: () -> Unit) {
-    Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(18.dp)) {
+    val installment = purchase.isInstallment
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(18.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = if (installment) MaterialTheme.colorScheme.secondaryContainer.copy(alpha = .55f) else MaterialTheme.colorScheme.surface
+        )
+    ) {
         Row(
             modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 10.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             Box(
-                modifier = Modifier.size(42.dp).background(MaterialTheme.colorScheme.surfaceVariant, CircleShape),
+                modifier = Modifier.size(42.dp).background(
+                    if (installment) MaterialTheme.colorScheme.secondary.copy(alpha = .12f) else MaterialTheme.colorScheme.surfaceVariant,
+                    CircleShape
+                ),
                 contentAlignment = Alignment.Center
             ) {
-                Icon(categoryIcon(purchase.category), contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                Icon(
+                    if (installment) Icons.Default.Repeat else categoryIcon(purchase.category),
+                    contentDescription = null,
+                    tint = if (installment) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.primary
+                )
             }
             Spacer(Modifier.width(10.dp))
             Column(modifier = Modifier.weight(1f)) {
-                Text(purchase.note.ifBlank { purchase.category }, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                Text("${purchase.category} • ${formatDate(purchase.purchaseDate)}", color = Color(0xFF667085), style = MaterialTheme.typography.bodySmall)
+                Text(
+                    purchase.note.ifBlank { purchase.category },
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                if (installment) {
+                    Text(
+                        "Parcela ${purchase.installmentNumber}/${purchase.installmentTotal} • ${purchase.category}",
+                        color = MaterialTheme.colorScheme.secondary,
+                        style = MaterialTheme.typography.bodySmall,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Text("Compra em ${formatDate(purchase.purchaseDate)}", color = Color(0xFF667085), style = MaterialTheme.typography.labelSmall)
+                } else {
+                    Text("${purchase.category} • ${formatDate(purchase.purchaseDate)}", color = Color(0xFF667085), style = MaterialTheme.typography.bodySmall)
+                }
             }
             Text(formatMoney(purchase.amountCents), fontWeight = FontWeight.Bold)
             IconButton(onClick = onEdit) {
@@ -600,9 +705,21 @@ private fun EditPurchaseDialog(
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Editar compra") },
+        title = { Text(if (purchase.isInstallment) "Editar parcela" else "Editar compra") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                if (purchase.isInstallment) {
+                    Card(
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer),
+                        shape = RoundedCornerShape(12.dp)
+                    ) {
+                        Text(
+                            "Parcela ${purchase.installmentNumber}/${purchase.installmentTotal}. A edição altera somente esta parcela.",
+                            modifier = Modifier.padding(10.dp),
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                    }
+                }
                 OutlinedTextField(
                     value = amount,
                     onValueChange = { amount = it; error = null },
@@ -690,6 +807,8 @@ private fun AnalysisScreen(data: AppData) {
 
     val periods = analysisPeriods(data)
     val periodTotals = periods.map { p -> purchasesForPeriod(data.purchases, p, data.settings).sumOf { it.amountCents } }
+    val futurePeriods = availableInvoicePeriods(data).filter { it.end.isAfter(current.end) }
+    val futureCommitted = futurePeriods.sumOf { p -> purchasesForPeriod(data.purchases, p, data.settings).sumOf { it.amountCents } }
     var showTrend by remember { mutableStateOf(true) }
 
     LazyColumn(modifier = Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -697,6 +816,27 @@ private fun AnalysisScreen(data: AppData) {
         item {
             Text("Análises", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
             Text("Histórico preservado para comparar seu comportamento de compra", color = Color(0xFF667085))
+        }
+        if (futureCommitted > 0) {
+            item {
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(20.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer)
+                ) {
+                    Row(modifier = Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Default.Repeat, contentDescription = null, tint = MaterialTheme.colorScheme.secondary)
+                        Spacer(Modifier.width(10.dp))
+                        Column {
+                            Text("Compromissos futuros", fontWeight = FontWeight.Bold)
+                            Text(
+                                "${futurePeriods.size} faturas futuras • ${formatMoney(futureCommitted)} já previstos",
+                                color = Color(0xFF475467)
+                            )
+                        }
+                    }
+                }
+            }
         }
         item {
             Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(20.dp)) {
@@ -756,7 +896,7 @@ private fun AnalysisScreen(data: AppData) {
                 Column(modifier = Modifier.padding(18.dp)) {
                     Text("Resumo da fatura atual", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
                     Spacer(Modifier.height(8.dp))
-                    Text("${currentPurchases.size} compras • ${formatMoney(total)}")
+                    Text("${currentPurchases.size} lançamentos • ${formatMoney(total)}")
                     if (currentPurchases.isNotEmpty()) {
                         Text("Ticket médio: ${formatMoney(total / currentPurchases.size)}")
                         Text("Maior categoria: ${categoryTotals.firstOrNull()?.first ?: "—"}")
@@ -855,7 +995,7 @@ private fun SettingsScreen(
         item { Spacer(Modifier.height(6.dp)) }
         item {
             Text("Ajustes do cartão", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
-            Text("Fechamento e vencimento definem automaticamente o ciclo da fatura.", color = Color(0xFF667085))
+            Text("Compras no dia do fechamento já entram na próxima fatura.", color = Color(0xFF667085))
         }
         item {
             Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(20.dp)) {
@@ -885,9 +1025,10 @@ private fun SettingsScreen(
                         shape = RoundedCornerShape(16.dp)
                     ) {
                         Column(modifier = Modifier.fillMaxWidth().padding(14.dp)) {
-                            Text("Ciclo atual", fontWeight = FontWeight.Bold)
-                            Text("${formatDate(current.start)} a ${formatDate(current.end)}")
-                            Text("Vencimento ${formatDate(current.dueDate)} • melhor compra ${dayLabel(current.end.plusDays(1))}")
+                            Text("Ciclo da fatura atual", fontWeight = FontWeight.Bold)
+                            Text("Compras ${formatDate(current.start)} a ${formatDate(current.end.minusDays(1))}")
+                            Text("Fecha ${formatDate(current.end)} • vence ${formatDate(current.dueDate)}")
+                            Text("Melhor compra: ${dayLabel(current.end.plusDays(1))}", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.SemiBold)
                         }
                     }
                     Button(
@@ -988,12 +1129,34 @@ private fun assignInvoice(purchase: Purchase, settings: CardSettings): Purchase 
     if (purchase.invoiceStartEpochDay != null && purchase.invoiceEndEpochDay != null && purchase.invoiceDueEpochDay != null) {
         return purchase
     }
-    val period = invoiceForPurchase(purchase.purchaseDate, settings)
-    return purchase.copy(
-        invoiceStartEpochDay = period.start.toEpochDay(),
-        invoiceEndEpochDay = period.end.toEpochDay(),
-        invoiceDueEpochDay = period.dueDate.toEpochDay()
-    )
+    return assignToPeriod(purchase, invoiceForPurchase(purchase.purchaseDate, settings))
+}
+
+private fun assignToPeriod(purchase: Purchase, period: InvoicePeriod): Purchase = purchase.copy(
+    invoiceStartEpochDay = period.start.toEpochDay(),
+    invoiceEndEpochDay = period.end.toEpochDay(),
+    invoiceDueEpochDay = period.dueDate.toEpochDay()
+)
+
+private fun buildInstallmentSeries(base: Purchase, count: Int, settings: CardSettings): List<Purchase> {
+    val groupId = UUID.randomUUID().toString()
+    val result = mutableListOf<Purchase>()
+    var period = invoiceForPurchase(base.purchaseDate, settings)
+    repeat(count) { index ->
+        val installment = base.copy(
+            id = UUID.randomUUID().toString(),
+            createdAtMillis = base.createdAtMillis + index,
+            installmentGroupId = groupId,
+            installmentNumber = index + 1,
+            installmentTotal = count,
+            invoiceStartEpochDay = null,
+            invoiceEndEpochDay = null,
+            invoiceDueEpochDay = null
+        )
+        result.add(assignToPeriod(installment, period))
+        period = invoiceForPurchase(period.end, settings)
+    }
+    return result
 }
 
 private fun purchasePeriod(purchase: Purchase, settings: CardSettings): InvoicePeriod {
@@ -1017,8 +1180,12 @@ private fun availableInvoicePeriods(data: AppData): List<InvoicePeriod> {
 }
 
 private fun analysisPeriods(data: AppData): List<InvoicePeriod> {
-    val available = availableInvoicePeriods(data).toMutableList()
-    var cursor = invoiceForPurchase(LocalDate.now(), data.settings)
+    val current = invoiceForPurchase(LocalDate.now(), data.settings)
+    val available = availableInvoicePeriods(data)
+        .filter { !it.end.isAfter(current.end) }
+        .toMutableList()
+    var cursor = current
+    if (available.none { it.end == cursor.end }) available.add(cursor)
     while (available.size < 6) {
         cursor = invoiceForPurchase(cursor.start.minusDays(1), data.settings)
         if (available.none { it.end == cursor.end }) available.add(cursor)
@@ -1028,14 +1195,18 @@ private fun analysisPeriods(data: AppData): List<InvoicePeriod> {
 
 private fun invoiceForPurchase(date: LocalDate, settings: CardSettings): InvoicePeriod {
     val closeThisMonth = dateAtDay(date.year, date.monthValue, settings.closingDay)
-    val end = if (date.isAfter(closeThisMonth)) {
+
+    // A compra realizada no próprio dia do fechamento já pertence à próxima fatura.
+    val end = if (!date.isBefore(closeThisMonth)) {
         val next = date.plusMonths(1)
         dateAtDay(next.year, next.monthValue, settings.closingDay)
-    } else closeThisMonth
+    } else {
+        closeThisMonth
+    }
 
     val previousMonth = end.minusMonths(1)
     val previousClose = dateAtDay(previousMonth.year, previousMonth.monthValue, settings.closingDay)
-    val start = previousClose.plusDays(1)
+    val start = previousClose
 
     val dueBase = if (settings.dueDay > settings.closingDay) end else end.plusMonths(1)
     val dueDate = dateAtDay(dueBase.year, dueBase.monthValue, settings.dueDay)
@@ -1047,6 +1218,12 @@ private fun purchasesForPeriod(
     period: InvoicePeriod,
     settings: CardSettings
 ): List<Purchase> = purchases.filter { purchasePeriod(it, settings).end == period.end }
+
+private fun periodStatus(period: InvoicePeriod, current: InvoicePeriod): String = when {
+    period.end.isAfter(current.end) -> "Fatura futura • valores já previstos"
+    period.end.isBefore(current.end) -> "Fatura fechada e armazenada"
+    else -> "Fatura atual"
+}
 
 private fun dateAtDay(year: Int, month: Int, requestedDay: Int): LocalDate {
     val ym = YearMonth.of(year, month)
@@ -1151,6 +1328,7 @@ class SecureStore(private val context: Context) {
 
     private fun toJson(data: AppData): JSONObject {
         val root = JSONObject()
+        root.put("dataVersion", DATA_VERSION)
         root.put("settings", JSONObject().apply {
             put("closingDay", data.settings.closingDay)
             put("dueDay", data.settings.dueDay)
@@ -1168,6 +1346,9 @@ class SecureStore(private val context: Context) {
                     p.invoiceStartEpochDay?.let { put("invoiceStartEpochDay", it) }
                     p.invoiceEndEpochDay?.let { put("invoiceEndEpochDay", it) }
                     p.invoiceDueEpochDay?.let { put("invoiceDueEpochDay", it) }
+                    p.installmentGroupId?.let { put("installmentGroupId", it) }
+                    p.installmentNumber?.let { put("installmentNumber", it) }
+                    p.installmentTotal?.let { put("installmentTotal", it) }
                 })
             }
         })
@@ -1175,6 +1356,7 @@ class SecureStore(private val context: Context) {
     }
 
     private fun fromJson(root: JSONObject): AppData {
+        val dataVersion = root.optInt("dataVersion", 1)
         val settingsJson = root.optJSONObject("settings") ?: JSONObject()
         val legacyStartDay = settingsJson.optInt("invoiceStartDay", 6).coerceIn(1, 31)
         val inferredClosing = if (legacyStartDay > 1) legacyStartDay - 1 else 31
@@ -1198,7 +1380,7 @@ class SecureStore(private val context: Context) {
         val purchases = buildList {
             for (i in 0 until array.length()) {
                 val p = array.getJSONObject(i)
-                val raw = Purchase(
+                var raw = Purchase(
                     id = p.optString("id", UUID.randomUUID().toString()),
                     amountCents = p.optLong("amountCents", 0L),
                     purchaseDate = LocalDate.ofEpochDay(p.optLong("purchaseEpochDay", LocalDate.now().toEpochDay())),
@@ -1207,8 +1389,28 @@ class SecureStore(private val context: Context) {
                     note = p.optString("note", ""),
                     invoiceStartEpochDay = if (p.has("invoiceStartEpochDay")) p.optLong("invoiceStartEpochDay") else null,
                     invoiceEndEpochDay = if (p.has("invoiceEndEpochDay")) p.optLong("invoiceEndEpochDay") else null,
-                    invoiceDueEpochDay = if (p.has("invoiceDueEpochDay")) p.optLong("invoiceDueEpochDay") else null
+                    invoiceDueEpochDay = if (p.has("invoiceDueEpochDay")) p.optLong("invoiceDueEpochDay") else null,
+                    installmentGroupId = p.optString("installmentGroupId", "").ifBlank { null },
+                    installmentNumber = if (p.has("installmentNumber")) p.optInt("installmentNumber") else null,
+                    installmentTotal = if (p.has("installmentTotal")) p.optInt("installmentTotal") else null
                 )
+
+                if (dataVersion < DATA_VERSION) {
+                    val closingDateInPurchaseMonth = dateAtDay(raw.purchaseDate.year, raw.purchaseDate.monthValue, settings.closingDay)
+                    if (raw.purchaseDate == closingDateInPurchaseMonth) {
+                        raw = raw.copy(
+                            invoiceStartEpochDay = null,
+                            invoiceEndEpochDay = null,
+                            invoiceDueEpochDay = null
+                        )
+                    } else if (raw.invoiceEndEpochDay != null) {
+                        val oldEnd = LocalDate.ofEpochDay(raw.invoiceEndEpochDay)
+                        val previousMonth = oldEnd.minusMonths(1)
+                        val correctedStart = dateAtDay(previousMonth.year, previousMonth.monthValue, settings.closingDay)
+                        raw = raw.copy(invoiceStartEpochDay = correctedStart.toEpochDay())
+                    }
+                }
+
                 add(assignInvoice(raw, settings))
             }
         }

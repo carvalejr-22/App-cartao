@@ -8,6 +8,8 @@ import android.security.keystore.KeyProperties
 import android.util.Base64
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.result.IntentSenderRequest
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.horizontalScroll
@@ -35,6 +37,7 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
@@ -46,6 +49,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -79,7 +83,7 @@ import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
 import kotlin.math.max
 
-private const val MODERN_DATA_VERSION = 5
+private const val MODERN_DATA_VERSION = 6
 private const val LEGACY_CARD_ID = "legacy-card-1"
 
 private val ModernColors = lightColorScheme(
@@ -97,7 +101,7 @@ private val ModernColors = lightColorScheme(
 )
 
 private val modernDefaultCategories = listOf(
-    "Mercado", "Padaria", "Posto de gasolina", "Estacionamento", "Transporte",
+    "Mercado", "Padaria", "Lanches", "Sorvetes", "Posto de gasolina", "Estacionamento", "Transporte",
     "Restaurante", "Lazer", "Farmácia", "Saúde", "Casa", "Assinaturas",
     "Roupas", "Educação", "Viagem", "Outros"
 )
@@ -145,7 +149,8 @@ data class ModernAppData(
     val cards: List<ModernCardProfile> = listOf(ModernCardProfile(id = LEGACY_CARD_ID, name = "Cartão 1")),
     val activeCardId: String = LEGACY_CARD_ID,
     val purchases: List<ModernPurchase> = emptyList(),
-    val categories: List<String> = modernDefaultCategories
+    val categories: List<String> = modernDefaultCategories,
+    val lastModifiedMillis: Long = 0L
 )
 
 data class ModernInvoicePeriod(
@@ -157,26 +162,120 @@ data class ModernInvoicePeriod(
 private enum class ModernScreen { HOME, INVOICE, ANALYSIS, SETTINGS }
 
 class ModernCardActivity : ComponentActivity() {
-    override fun onCreate(savedInstanceState: Bundle?) {
-        super.onCreate(savedInstanceState)
-        val store = ModernSecureStore(this)
-        setContent {
-            MaterialTheme(colorScheme = ModernColors) {
-                ModernCreditCardApp(store)
+    private lateinit var store: ModernSecureStore
+    private lateinit var cloudSync: GoogleDriveSync
+    private var pendingCloudCallback: ((CloudSyncResult) -> Unit)? = null
+
+    private val cloudAuthorizationLauncher =
+        registerForActivityResult(ActivityResultContracts.StartIntentSenderForResult()) { result ->
+            val callback = pendingCloudCallback
+            if (result.resultCode != RESULT_OK || result.data == null) {
+                pendingCloudCallback = null
+                callback?.invoke(CloudSyncResult(false, "Conexão com a Conta Google cancelada."))
+                return@registerForActivityResult
+            }
+
+            try {
+                val authorization = cloudSync.authorizationResultFromIntent(result.data!!)
+                finishCloudAuthorization(authorization, callback)
+            } catch (_: Exception) {
+                pendingCloudCallback = null
+                callback?.invoke(CloudSyncResult(false, "Não foi possível concluir a autorização do Google Drive."))
             }
         }
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        store = ModernSecureStore(this)
+        cloudSync = GoogleDriveSync(this)
+        setContent {
+            MaterialTheme(colorScheme = ModernColors) {
+                ModernCreditCardApp(
+                    store = store,
+                    cloudSync = cloudSync,
+                    onAuthorizeAndSync = ::authorizeAndSync,
+                    onDisconnectCloud = ::disconnectCloud
+                )
+            }
+        }
+    }
+
+    private fun authorizeAndSync(callback: (CloudSyncResult) -> Unit) {
+        pendingCloudCallback = callback
+        cloudSync.requestAuthorization { authorization, error ->
+            runOnUiThread {
+                when {
+                    error != null || authorization == null -> {
+                        pendingCloudCallback = null
+                        callback(CloudSyncResult(false, "Não foi possível acessar a Conta Google."))
+                    }
+                    authorization.hasResolution() -> {
+                        val pendingIntent = authorization.pendingIntent
+                        if (pendingIntent == null) {
+                            pendingCloudCallback = null
+                            callback(CloudSyncResult(false, "O Google não retornou uma tela de autorização válida."))
+                        } else {
+                            cloudAuthorizationLauncher.launch(
+                                IntentSenderRequest.Builder(pendingIntent.intentSender).build()
+                            )
+                        }
+                    }
+                    else -> finishCloudAuthorization(authorization, callback)
+                }
+            }
+        }
+    }
+
+    private fun finishCloudAuthorization(
+        authorization: com.google.android.gms.auth.api.identity.AuthorizationResult,
+        callback: ((CloudSyncResult) -> Unit)?
+    ) {
+        val token = authorization.accessToken
+        if (token.isNullOrBlank()) {
+            pendingCloudCallback = null
+            callback?.invoke(CloudSyncResult(false, "A Conta Google não forneceu autorização para o backup."))
+            return
+        }
+
+        cloudSync.setEnabled(true)
+        cloudSync.syncWithToken(store, token) { syncResult ->
+            pendingCloudCallback = null
+            callback?.invoke(syncResult)
+        }
+    }
+
+    private fun disconnectCloud(callback: (String) -> Unit) {
+        cloudSync.disconnect { message -> runOnUiThread { callback(message) } }
     }
 }
 
 @Composable
-private fun ModernCreditCardApp(store: ModernSecureStore) {
+private fun ModernCreditCardApp(
+    store: ModernSecureStore,
+    cloudSync: GoogleDriveSync,
+    onAuthorizeAndSync: ((CloudSyncResult) -> Unit) -> Unit,
+    onDisconnectCloud: ((String) -> Unit) -> Unit
+) {
     var data by remember { mutableStateOf(store.read()) }
     var screen by remember { mutableStateOf(ModernScreen.HOME) }
+    var cloudEnabled by remember { mutableStateOf(cloudSync.isEnabled()) }
+    var cloudMessage by remember { mutableStateOf(cloudSync.lastStatusText()) }
+
+    LaunchedEffect(Unit) {
+        cloudSync.tryRestoreExistingGrant(store) { result ->
+            if (result != null) {
+                cloudEnabled = cloudSync.isEnabled()
+                cloudMessage = result.message
+                if (result.restoredFromCloud) data = store.read()
+            }
+        }
+    }
 
     fun persist(newData: ModernAppData) {
-        val normalized = normalizeModernData(newData)
+        val normalized = normalizeModernData(newData).copy(lastModifiedMillis = System.currentTimeMillis())
         store.write(normalized)
         data = normalized
+        if (cloudSync.isEnabled()) cloudSync.enqueueSync()
     }
 
     fun selectCard(cardId: String) {
@@ -248,7 +347,16 @@ private fun ModernCreditCardApp(store: ModernSecureStore) {
                 ModernScreen.INVOICE -> ModernInvoiceScreen(
                     data = data,
                     onSelectCard = ::selectCard,
-                    onDelete = { id -> persist(data.copy(purchases = data.purchases.filterNot { it.id == id })) }
+                    onDelete = { id -> persist(data.copy(purchases = data.purchases.filterNot { it.id == id })) },
+                    onEditAmount = { id, newAmount ->
+                        persist(
+                            data.copy(
+                                purchases = data.purchases.map { purchase ->
+                                    if (purchase.id == id) purchase.copy(amountCents = newAmount) else purchase
+                                }
+                            )
+                        )
+                    }
                 )
 
                 ModernScreen.ANALYSIS -> ModernAnalysisScreen(data, ::selectCard)
@@ -273,7 +381,23 @@ private fun ModernCreditCardApp(store: ModernSecureStore) {
                             )
                         }
                     },
-                    onCategoriesChanged = { categories -> persist(data.copy(categories = categories)) }
+                    onCategoriesChanged = { categories -> persist(data.copy(categories = categories)) },
+                    cloudEnabled = cloudEnabled,
+                    cloudMessage = cloudMessage,
+                    onCloudSync = {
+                        cloudMessage = "Conectando com a Conta Google…"
+                        onAuthorizeAndSync { result ->
+                            cloudEnabled = cloudSync.isEnabled()
+                            cloudMessage = result.message
+                            if (result.restoredFromCloud) data = store.read()
+                        }
+                    },
+                    onCloudDisconnect = {
+                        onDisconnectCloud { message ->
+                            cloudEnabled = cloudSync.isEnabled()
+                            cloudMessage = message
+                        }
+                    }
                 )
             }
         }
@@ -615,7 +739,8 @@ private fun CardSelector(
 private fun ModernInvoiceScreen(
     data: ModernAppData,
     onSelectCard: (String) -> Unit,
-    onDelete: (String) -> Unit
+    onDelete: (String) -> Unit,
+    onEditAmount: (String, Long) -> Unit
 ) {
     val card = data.cards.firstOrNull { it.id == data.activeCardId } ?: data.cards.first()
     val periods = modernAvailableInvoicePeriods(data, card)
@@ -628,6 +753,7 @@ private fun ModernInvoiceScreen(
         .sortedWith(compareByDescending<ModernPurchase> { it.purchaseDate }.thenByDescending { it.createdAtMillis })
     val total = purchases.sumOf { it.amountCents }
     var pendingDelete by remember { mutableStateOf<ModernPurchase?>(null) }
+    var pendingEdit by remember { mutableStateOf<ModernPurchase?>(null) }
 
     LazyColumn(modifier = Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         item { Spacer(Modifier.height(6.dp)) }
@@ -706,13 +832,67 @@ private fun ModernInvoiceScreen(
                         }
                         Column(horizontalAlignment = Alignment.End) {
                             Text(formatModernMoney(purchase.amountCents), fontWeight = FontWeight.Bold)
-                            TextButton(onClick = { pendingDelete = purchase }) { Text("Excluir", color = Color(0xFFB42318)) }
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                IconButton(onClick = { pendingEdit = purchase }) {
+                                    Text("✎", fontSize = 21.sp, color = MaterialTheme.colorScheme.secondary)
+                                }
+                                IconButton(onClick = { pendingDelete = purchase }) {
+                                    Text("🗑", fontSize = 19.sp, color = Color(0xFFB42318))
+                                }
+                            }
                         }
                     }
                 }
             }
         }
         item { Spacer(Modifier.height(16.dp)) }
+    }
+
+    pendingEdit?.let { purchase ->
+        var editAmount by remember(purchase.id) {
+            mutableStateOf("%.2f".format(Locale("pt", "BR"), purchase.amountCents / 100.0))
+        }
+        var editError by remember(purchase.id) { mutableStateOf<String?>(null) }
+
+        AlertDialog(
+            onDismissRequest = { pendingEdit = null },
+            title = { Text("Editar valor") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(purchase.note.ifBlank { purchase.category }, color = Color(0xFF667085))
+                    OutlinedTextField(
+                        value = editAmount,
+                        onValueChange = { editAmount = it; editError = null },
+                        label = { Text("Valor") },
+                        prefix = { Text("R$ ") },
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                        singleLine = true
+                    )
+                    editError?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+                    if (purchase.isInstallment) {
+                        Text(
+                            "A alteração vale somente para a parcela ${purchase.installmentNumber}/${purchase.installmentTotal}.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = Color(0xFF667085)
+                        )
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        val cents = parseModernMoneyToCents(editAmount)
+                        if (cents == null || cents <= 0L) {
+                            editError = "Digite um valor válido."
+                        } else {
+                            onEditAmount(purchase.id, cents)
+                            pendingEdit = null
+                        }
+                    }
+                ) { Text("Salvar") }
+            },
+            dismissButton = { TextButton(onClick = { pendingEdit = null }) { Text("Cancelar") } }
+        )
     }
 
     pendingDelete?.let { purchase ->
@@ -1139,7 +1319,11 @@ private fun ModernSettingsScreen(
     onSelectCard: (String) -> Unit,
     onSaveCard: (ModernCardProfile) -> Unit,
     onDeleteCard: (String) -> Unit,
-    onCategoriesChanged: (List<String>) -> Unit
+    onCategoriesChanged: (List<String>) -> Unit,
+    cloudEnabled: Boolean,
+    cloudMessage: String?,
+    onCloudSync: () -> Unit,
+    onCloudDisconnect: () -> Unit
 ) {
     val card = data.cards.firstOrNull { it.id == data.activeCardId } ?: data.cards.first()
     var name by remember(card.id, card.name) { mutableStateOf(card.name) }
@@ -1258,13 +1442,48 @@ private fun ModernSettingsScreen(
                             Spacer(Modifier.width(10.dp))
                             Text(category, modifier = Modifier.weight(1f))
                             if (category != "Outros") {
-                                TextButton(onClick = {
+                                IconButton(onClick = {
                                     val updated = data.categories.filterNot { it == category }
                                     onCategoriesChanged(if (updated.isEmpty()) listOf("Outros") else updated)
-                                }) { Text("Excluir", color = Color(0xFFB42318)) }
+                                }) {
+                                    Text("🗑", fontSize = 18.sp, color = Color(0xFFB42318))
+                                }
                             }
                         }
                         if (index < data.categories.lastIndex) HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                    }
+                }
+            }
+        }
+        item {
+            Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(20.dp)) {
+                Column(modifier = Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text("Backup na Conta Google", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                    Text(
+                        if (cloudEnabled) {
+                            "Ativado. O app continua funcionando offline e sincroniza as mudanças quando houver internet."
+                        } else {
+                            "Opcional. Conecte uma Conta Google para restaurar seus dados ao trocar de celular ou reinstalar o app."
+                        },
+                        color = Color(0xFF667085),
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                    Button(
+                        onClick = onCloudSync,
+                        modifier = Modifier.fillMaxWidth().height(50.dp),
+                        shape = RoundedCornerShape(16.dp)
+                    ) {
+                        Text(if (cloudEnabled) "Sincronizar agora" else "Conectar Conta Google", fontWeight = FontWeight.Bold)
+                    }
+                    if (cloudEnabled) {
+                        OutlinedButton(
+                            onClick = onCloudDisconnect,
+                            modifier = Modifier.fillMaxWidth().height(48.dp),
+                            shape = RoundedCornerShape(16.dp)
+                        ) { Text("Desconectar backup") }
+                    }
+                    cloudMessage?.let {
+                        Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
                     }
                 }
             }
@@ -1278,7 +1497,8 @@ private fun ModernSettingsScreen(
                 Column(modifier = Modifier.padding(18.dp)) {
                     Text("Leve e privado", fontWeight = FontWeight.Bold)
                     Spacer(Modifier.height(6.dp))
-                    Text("• Sem internet e sem serviços rodando em segundo plano.")
+                    Text("• Funciona offline; a internet só é usada quando o backup Google está autorizado.")
+                    Text("• A sincronização usa a pasta privada appData do Google Drive, invisível no Meu Drive.")
                     Text("• Dados criptografados com AES-GCM e chave no Android Keystore.")
                     Text("• Interface usa listas sob demanda para evitar carregar itens fora da tela.")
                     Text("• Evite salvar número do cartão, CVV ou senha nas descrições.")
@@ -1440,6 +1660,8 @@ private fun modernDateAtDay(year: Int, month: Int, requestedDay: Int): LocalDate
 private fun modernCategorySymbol(category: String): String = when (category) {
     "Mercado" -> "🛒"
     "Padaria" -> "🥖"
+    "Lanches" -> "🍔"
+    "Sorvetes" -> "🍦"
     "Posto de gasolina" -> "⛽"
     "Estacionamento" -> "🅿"
     "Transporte" -> "🚌"
@@ -1475,7 +1697,7 @@ private fun parseModernMoneyToCents(raw: String): Long? {
         ?.longValueExact()
 }
 
-private class ModernSecureStore(private val context: Context) {
+class ModernSecureStore(private val context: Context) {
     private val fileName = "card_data.enc"
     private val alias = "app_cartao_aes_key_v1"
 
@@ -1490,7 +1712,9 @@ private class ModernSecureStore(private val context: Context) {
             val cipher = Cipher.getInstance("AES/GCM/NoPadding")
             cipher.init(Cipher.DECRYPT_MODE, getOrCreateKey(), GCMParameterSpec(128, iv))
             val json = String(cipher.doFinal(encrypted), Charsets.UTF_8)
-            normalizeModernData(fromJson(JSONObject(json)))
+            val decoded = normalizeModernData(fromJson(JSONObject(json)))
+            if (decoded.lastModifiedMillis > 0L) decoded
+            else decoded.copy(lastModifiedMillis = file.lastModified().coerceAtLeast(1L))
         } catch (_: Exception) {
             ModernAppData()
         }
@@ -1507,6 +1731,17 @@ private class ModernSecureStore(private val context: Context) {
         val target = context.filesDir.resolve(fileName)
         if (target.exists()) target.delete()
         check(temp.renameTo(target))
+    }
+
+    fun exportPlainJson(): String = toJson(read()).toString()
+
+    fun decodePlainJson(json: String): ModernAppData =
+        normalizeModernData(fromJson(JSONObject(json)))
+
+    fun importPlainJson(json: String): ModernAppData {
+        val decoded = decodePlainJson(json)
+        write(decoded)
+        return decoded
     }
 
     private fun getOrCreateKey(): SecretKey {
@@ -1527,6 +1762,7 @@ private class ModernSecureStore(private val context: Context) {
         return JSONObject().apply {
             put("dataVersion", MODERN_DATA_VERSION)
             put("activeCardId", data.activeCardId)
+            put("lastModifiedMillis", data.lastModifiedMillis)
             put("cards", JSONArray().apply {
                 data.cards.forEach { card ->
                     put(JSONObject().apply {
@@ -1596,12 +1832,17 @@ private class ModernSecureStore(private val context: Context) {
         }
 
         val categoriesJson = root.optJSONArray("categories")
-        val categories = if (categoriesJson == null) modernDefaultCategories else buildList {
+        val categories = (if (categoriesJson == null) modernDefaultCategories else buildList {
             for (i in 0 until categoriesJson.length()) {
                 val value = categoriesJson.optString(i).trim()
                 if (value.isNotEmpty()) add(value)
             }
-        }.ifEmpty { modernDefaultCategories }
+        }.ifEmpty { modernDefaultCategories }).toMutableList()
+
+        if (dataVersion < 6) {
+            if (categories.none { it.equals("Lanches", ignoreCase = true) }) categories.add("Lanches")
+            if (categories.none { it.equals("Sorvetes", ignoreCase = true) }) categories.add("Sorvetes")
+        }
 
         val firstCard = cards.first()
         val cardById = cards.associateBy { it.id }
@@ -1648,6 +1889,12 @@ private class ModernSecureStore(private val context: Context) {
             }
         }
 
-        return ModernAppData(cards = cards, activeCardId = activeCardId, purchases = purchases, categories = categories)
+        return ModernAppData(
+            cards = cards,
+            activeCardId = activeCardId,
+            purchases = purchases,
+            categories = categories,
+            lastModifiedMillis = root.optLong("lastModifiedMillis", 0L)
+        )
     }
 }

@@ -12,8 +12,8 @@ android {
         applicationId = "com.carlos.appcartao"
         minSdk = 26
         targetSdk = 36
-        versionCode = 6
-        versionName = "0.5.0"
+        versionCode = 7
+        versionName = "0.5.1"
     }
 
     buildFeatures {
@@ -22,11 +22,13 @@ android {
 
     buildTypes {
         debug {
+            isDebuggable = false
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
         }
         release {
+            isDebuggable = false
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")

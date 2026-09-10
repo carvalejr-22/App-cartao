@@ -1,0 +1,30 @@
+name: Fix App Cartao v0.6.2
+
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - ".github/workflows/fix-v062-google-icons.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Apply v0.6.2 fixes
+        run: python3 .github/scripts/fix_v062_google_and_icons.py
+
+      - name: Commit fixes
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add app/src/main/java/com/carlos/appcartao/ModernCardActivity.kt app/src/main/java/com/carlos/appcartao/GoogleDriveSync.kt app/build.gradle.kts
+          git commit -m "Fix Google authorization flow and compact action icons"
+          git push

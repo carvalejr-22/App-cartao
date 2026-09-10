@@ -1,0 +1,1340 @@
+package com.carlos.appcartao
+
+import android.app.DatePickerDialog
+import android.content.Context
+import android.os.Bundle
+import android.security.keystore.KeyGenParameterSpec
+import android.security.keystore.KeyProperties
+import android.util.Base64
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.setContent
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.background
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.weight
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.NavigationBar
+import androidx.compose.material3.NavigationBarItem
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Switch
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.lightColorScheme
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import org.json.JSONArray
+import org.json.JSONObject
+import java.math.BigDecimal
+import java.math.RoundingMode
+import java.security.KeyStore
+import java.text.NumberFormat
+import java.time.Instant
+import java.time.LocalDate
+import java.time.YearMonth
+import java.time.format.DateTimeFormatter
+import java.util.Locale
+import java.util.UUID
+import javax.crypto.Cipher
+import javax.crypto.KeyGenerator
+import javax.crypto.SecretKey
+import javax.crypto.spec.GCMParameterSpec
+import kotlin.math.max
+
+private const val MODERN_DATA_VERSION = 5
+private const val LEGACY_CARD_ID = "legacy-card-1"
+
+private val ModernColors = lightColorScheme(
+    primary = Color(0xFF176A5C),
+    onPrimary = Color.White,
+    primaryContainer = Color(0xFFD8F3EC),
+    onPrimaryContainer = Color(0xFF063C34),
+    secondary = Color(0xFF4B67D1),
+    secondaryContainer = Color(0xFFE2E8FF),
+    tertiary = Color(0xFFFF8B3D),
+    background = Color(0xFFF6F7FA),
+    surface = Color.White,
+    surfaceVariant = Color(0xFFEEF1F5),
+    outlineVariant = Color(0xFFDDE2E8)
+)
+
+private val modernDefaultCategories = listOf(
+    "Mercado", "Padaria", "Posto de gasolina", "Estacionamento", "Transporte",
+    "Restaurante", "Lazer", "Farmácia", "Saúde", "Casa", "Assinaturas",
+    "Roupas", "Educação", "Viagem", "Outros"
+)
+
+private val modernChartColors = listOf(
+    Color(0xFF4B67D1), Color(0xFF16A36A), Color(0xFFFF8B3D), Color(0xFF8657D8),
+    Color(0xFF1598B5), Color(0xFFD85868), Color(0xFFD2A51C), Color(0xFF667085)
+)
+
+data class ModernCardProfile(
+    val id: String = UUID.randomUUID().toString(),
+    val name: String,
+    val closingDay: Int = 5,
+    val dueDay: Int = 12
+) {
+    val bestPurchaseDay: Int get() = if (closingDay >= 31) 1 else closingDay + 1
+}
+
+data class ModernPurchase(
+    val id: String = UUID.randomUUID().toString(),
+    val cardId: String,
+    val amountCents: Long,
+    val purchaseDate: LocalDate,
+    val createdAtMillis: Long = System.currentTimeMillis(),
+    val category: String,
+    val note: String = "",
+    val invoiceStartEpochDay: Long? = null,
+    val invoiceEndEpochDay: Long? = null,
+    val invoiceDueEpochDay: Long? = null,
+    val installmentGroupId: String? = null,
+    val installmentNumber: Int? = null,
+    val installmentTotal: Int? = null
+) {
+    val isInstallment: Boolean
+        get() = installmentGroupId != null && installmentNumber != null && installmentTotal != null && installmentTotal > 1
+}
+
+data class ModernAppData(
+    val cards: List<ModernCardProfile> = listOf(ModernCardProfile(id = LEGACY_CARD_ID, name = "Cartão 1")),
+    val activeCardId: String = LEGACY_CARD_ID,
+    val purchases: List<ModernPurchase> = emptyList(),
+    val categories: List<String> = modernDefaultCategories
+)
+
+data class ModernInvoicePeriod(
+    val start: LocalDate,
+    val end: LocalDate,
+    val dueDate: LocalDate
+)
+
+private enum class ModernScreen { HOME, INVOICE, ANALYSIS, SETTINGS }
+
+class ModernCardActivity : ComponentActivity() {
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        val store = ModernSecureStore(this)
+        setContent {
+            MaterialTheme(colorScheme = ModernColors) {
+                ModernCreditCardApp(store)
+            }
+        }
+    }
+}
+
+@Composable
+private fun ModernCreditCardApp(store: ModernSecureStore) {
+    var data by remember { mutableStateOf(store.read()) }
+    var screen by remember { mutableStateOf(ModernScreen.HOME) }
+
+    fun persist(newData: ModernAppData) {
+        val normalized = normalizeModernData(newData)
+        store.write(normalized)
+        data = normalized
+    }
+
+    fun selectCard(cardId: String) {
+        if (data.cards.any { it.id == cardId } && data.activeCardId != cardId) {
+            persist(data.copy(activeCardId = cardId))
+        }
+    }
+
+    fun addCard() {
+        val usedNumbers = data.cards.mapNotNull {
+            Regex("^Cartão (\\d+)$", RegexOption.IGNORE_CASE).matchEntire(it.name.trim())?.groupValues?.getOrNull(1)?.toIntOrNull()
+        }.toSet()
+        var number = 1
+        while (number in usedNumbers) number++
+        val reference = data.cards.firstOrNull { it.id == data.activeCardId } ?: data.cards.first()
+        val card = ModernCardProfile(
+            name = "Cartão $number",
+            closingDay = reference.closingDay,
+            dueDay = reference.dueDay
+        )
+        persist(data.copy(cards = data.cards + card, activeCardId = card.id))
+    }
+
+    Scaffold(
+        containerColor = MaterialTheme.colorScheme.background,
+        bottomBar = {
+            NavigationBar(containerColor = MaterialTheme.colorScheme.surface) {
+                NavigationBarItem(
+                    selected = screen == ModernScreen.HOME,
+                    onClick = { screen = ModernScreen.HOME },
+                    icon = { Text("⌂", fontSize = 24.sp) },
+                    label = { Text("Início") }
+                )
+                NavigationBarItem(
+                    selected = screen == ModernScreen.INVOICE,
+                    onClick = { screen = ModernScreen.INVOICE },
+                    icon = { Text("▤", fontSize = 22.sp) },
+                    label = { Text("Fatura") }
+                )
+                NavigationBarItem(
+                    selected = screen == ModernScreen.ANALYSIS,
+                    onClick = { screen = ModernScreen.ANALYSIS },
+                    icon = { Text("▥", fontSize = 22.sp) },
+                    label = { Text("Análises") }
+                )
+                NavigationBarItem(
+                    selected = screen == ModernScreen.SETTINGS,
+                    onClick = { screen = ModernScreen.SETTINGS },
+                    icon = { Text("⚙", fontSize = 22.sp) },
+                    label = { Text("Ajustes") }
+                )
+            }
+        }
+    ) { padding ->
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(padding)
+                .padding(horizontal = 16.dp)
+        ) {
+            when (screen) {
+                ModernScreen.HOME -> ModernHomeScreen(
+                    data = data,
+                    onSelectCard = ::selectCard,
+                    onAddCard = ::addCard,
+                    onAddPurchases = { purchases -> persist(data.copy(purchases = data.purchases + purchases)) }
+                )
+
+                ModernScreen.INVOICE -> ModernInvoiceScreen(
+                    data = data,
+                    onSelectCard = ::selectCard,
+                    onDelete = { id -> persist(data.copy(purchases = data.purchases.filterNot { it.id == id })) }
+                )
+
+                ModernScreen.ANALYSIS -> ModernAnalysisScreen(data, ::selectCard)
+
+                ModernScreen.SETTINGS -> ModernSettingsScreen(
+                    data = data,
+                    onSelectCard = ::selectCard,
+                    onSaveCard = { updated ->
+                        persist(data.copy(cards = data.cards.map { if (it.id == updated.id) updated else it }))
+                    },
+                    onCategoriesChanged = { categories -> persist(data.copy(categories = categories)) }
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun ModernHomeScreen(
+    data: ModernAppData,
+    onSelectCard: (String) -> Unit,
+    onAddCard: () -> Unit,
+    onAddPurchases: (List<ModernPurchase>) -> Unit
+) {
+    val today = LocalDate.now()
+    val activeCard = data.cards.firstOrNull { it.id == data.activeCardId } ?: data.cards.first()
+    val currentPeriod = modernInvoiceForPurchase(today, activeCard)
+    val cardTotal = modernPurchasesForPeriod(data.purchases, activeCard.id, currentPeriod).sumOf { it.amountCents }
+    val allCardsTotal = data.cards.sumOf { card ->
+        val period = modernInvoiceForPurchase(today, card)
+        modernPurchasesForPeriod(data.purchases, card.id, period).sumOf { it.amountCents }
+    }
+
+    var amount by remember { mutableStateOf("") }
+    var category by remember(data.categories) { mutableStateOf(data.categories.firstOrNull() ?: "Outros") }
+    var note by remember { mutableStateOf("") }
+    var date by remember { mutableStateOf(today) }
+    var showCategories by remember { mutableStateOf(false) }
+    var isInstallment by remember { mutableStateOf(false) }
+    var installmentCount by remember { mutableStateOf("12") }
+    var error by remember { mutableStateOf<String?>(null) }
+    val context = androidx.compose.ui.platform.LocalContext.current
+
+    LazyColumn(
+        modifier = Modifier.fillMaxSize(),
+        verticalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        item { Spacer(Modifier.height(4.dp)) }
+        item {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(24.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primary)
+            ) {
+                Column(modifier = Modifier.padding(20.dp)) {
+                    Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("Total das faturas atuais", color = Color.White.copy(alpha = .78f))
+                            Text(
+                                formatModernMoney(allCardsTotal),
+                                style = MaterialTheme.typography.headlineLarge,
+                                fontWeight = FontWeight.Bold,
+                                color = Color.White
+                            )
+                        }
+                        Box(
+                            modifier = Modifier.size(42.dp).background(Color.White.copy(alpha = .14f), CircleShape),
+                            contentAlignment = Alignment.Center
+                        ) { Text("▣", color = Color.White, fontSize = 22.sp) }
+                    }
+                    if (data.cards.size > 1) {
+                        Spacer(Modifier.height(6.dp))
+                        Text("${data.cards.size} cartões incluídos", color = Color.White.copy(alpha = .72f), style = MaterialTheme.typography.bodySmall)
+                    }
+                }
+            }
+        }
+
+        item {
+            Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Text("Cartões", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+                TextButton(onClick = onAddCard, modifier = Modifier.size(44.dp)) {
+                    Text("+", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Light)
+                }
+            }
+            Row(
+                modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                data.cards.forEach { card ->
+                    val period = modernInvoiceForPurchase(today, card)
+                    val total = modernPurchasesForPeriod(data.purchases, card.id, period).sumOf { it.amountCents }
+                    val selected = card.id == activeCard.id
+                    FilledTonalButton(
+                        onClick = { onSelectCard(card.id) },
+                        shape = RoundedCornerShape(16.dp),
+                        colors = ButtonDefaults.filledTonalButtonColors(
+                            containerColor = if (selected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surface
+                        )
+                    ) {
+                        Column(horizontalAlignment = Alignment.Start) {
+                            Text(card.name, fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium)
+                            Text(formatModernMoney(total), style = MaterialTheme.typography.labelSmall, color = Color(0xFF667085))
+                        }
+                    }
+                }
+            }
+        }
+
+        item {
+            Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(20.dp)) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(activeCard.name, color = Color(0xFF667085))
+                            Text(formatModernMoney(cardTotal), style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+                        }
+                        Text("Fatura atual", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.SemiBold)
+                    }
+                    Spacer(Modifier.height(12.dp))
+                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                        CompactInfo("Fecha", modernDayLabel(currentPeriod.end))
+                        CompactInfo("Vence", modernDayLabel(currentPeriod.dueDate))
+                        CompactInfo("Melhor compra", modernDayLabel(currentPeriod.end.plusDays(1)))
+                    }
+                }
+            }
+        }
+
+        item { Text("Nova compra • ${activeCard.name}", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold) }
+        item {
+            OutlinedTextField(
+                value = amount,
+                onValueChange = { amount = it; error = null },
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(16.dp),
+                label = { Text(if (isInstallment) "Valor de cada parcela" else "Valor da compra") },
+                prefix = { Text("R$ ") },
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                singleLine = true
+            )
+        }
+        item {
+            FilledTonalButton(
+                onClick = { showCategories = true },
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(16.dp)
+            ) {
+                Text(modernCategorySymbol(category), fontSize = 20.sp)
+                Spacer(Modifier.width(8.dp))
+                Text(category, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text("Alterar")
+            }
+        }
+        item {
+            OutlinedTextField(
+                value = note,
+                onValueChange = { note = it },
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(16.dp),
+                label = { Text("Descrição (opcional)") },
+                singleLine = true
+            )
+        }
+        item {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(18.dp),
+                colors = CardDefaults.cardColors(
+                    containerColor = if (isInstallment) MaterialTheme.colorScheme.secondaryContainer else MaterialTheme.colorScheme.surface
+                )
+            ) {
+                Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text("⇄", color = MaterialTheme.colorScheme.secondary, fontSize = 24.sp)
+                        Spacer(Modifier.width(10.dp))
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("Compra parcelada", fontWeight = FontWeight.SemiBold)
+                            Text(
+                                if (isInstallment) "Cada parcela entra automaticamente na fatura correta" else "Desativado: a compra será registrada à vista",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = Color(0xFF667085)
+                            )
+                        }
+                        Switch(
+                            checked = isInstallment,
+                            onCheckedChange = {
+                                isInstallment = it
+                                error = null
+                            }
+                        )
+                    }
+                    if (isInstallment) {
+                        Spacer(Modifier.height(8.dp))
+                        OutlinedTextField(
+                            value = installmentCount,
+                            onValueChange = { installmentCount = it.filter(Char::isDigit).take(2); error = null },
+                            modifier = Modifier.fillMaxWidth(),
+                            label = { Text("Número de parcelas") },
+                            suffix = { Text("x") },
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                            singleLine = true
+                        )
+                    }
+                }
+            }
+        }
+        item {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                FilledTonalButton(onClick = { date = today }, modifier = Modifier.weight(1f)) {
+                    Text(if (date == today) "Hoje ✓" else "Hoje")
+                }
+                FilledTonalButton(
+                    onClick = {
+                        DatePickerDialog(
+                            context,
+                            { _, y, m, d -> date = LocalDate.of(y, m + 1, d) },
+                            date.year,
+                            date.monthValue - 1,
+                            date.dayOfMonth
+                        ).show()
+                    },
+                    modifier = Modifier.weight(1f)
+                ) { Text("▣  ${formatModernDate(date)}") }
+            }
+        }
+        if (error != null) item { Text(error!!, color = MaterialTheme.colorScheme.error) }
+        item {
+            Button(
+                onClick = {
+                    val cents = parseModernMoneyToCents(amount)
+                    val parcels = if (isInstallment) installmentCount.toIntOrNull() else 1
+                    when {
+                        cents == null || cents <= 0 -> error = "Digite um valor válido. Ex.: 228,38"
+                        isInstallment && (parcels == null || parcels !in 2..60) -> error = "Informe entre 2 e 60 parcelas."
+                        else -> {
+                            val base = ModernPurchase(
+                                cardId = activeCard.id,
+                                amountCents = cents,
+                                purchaseDate = date,
+                                category = category,
+                                note = note.trim()
+                            )
+                            val count = parcels ?: 1
+                            val purchases = if (count == 1) {
+                                listOf(modernAssignInvoice(base, activeCard))
+                            } else {
+                                modernBuildInstallmentSeries(base, count, activeCard)
+                            }
+                            onAddPurchases(purchases)
+                            amount = ""
+                            note = ""
+                            date = LocalDate.now()
+                            isInstallment = false
+                            installmentCount = "12"
+                            error = null
+                        }
+                    }
+                },
+                modifier = Modifier.fillMaxWidth().height(54.dp),
+                shape = RoundedCornerShape(18.dp),
+                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
+            ) {
+                Text("＋  ${if (isInstallment) "Salvar parcelas" else "Salvar compra"}", fontWeight = FontWeight.Bold)
+            }
+        }
+        item { Spacer(Modifier.height(12.dp)) }
+    }
+
+    if (showCategories) {
+        AlertDialog(
+            onDismissRequest = { showCategories = false },
+            title = { Text("Categoria da compra") },
+            text = {
+                LazyColumn(modifier = Modifier.height(420.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    items(data.categories) { item ->
+                        TextButton(
+                            onClick = { category = item; showCategories = false },
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text(modernCategorySymbol(item), fontSize = 20.sp)
+                            Spacer(Modifier.width(10.dp))
+                            Text(item, modifier = Modifier.weight(1f))
+                            if (item == category) Text("✓", color = MaterialTheme.colorScheme.primary)
+                        }
+                    }
+                }
+            },
+            confirmButton = { TextButton(onClick = { showCategories = false }) { Text("Fechar") } }
+        )
+    }
+}
+
+@Composable
+private fun CompactInfo(title: String, value: String) {
+    Column {
+        Text(title, style = MaterialTheme.typography.labelSmall, color = Color(0xFF667085))
+        Text(value, fontWeight = FontWeight.Bold)
+    }
+}
+
+@Composable
+private fun CardSelector(
+    data: ModernAppData,
+    onSelectCard: (String) -> Unit
+) {
+    val today = LocalDate.now()
+    Row(
+        modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        data.cards.forEach { card ->
+            val selected = card.id == data.activeCardId
+            val period = modernInvoiceForPurchase(today, card)
+            val total = modernPurchasesForPeriod(data.purchases, card.id, period).sumOf { it.amountCents }
+            FilledTonalButton(
+                onClick = { onSelectCard(card.id) },
+                shape = RoundedCornerShape(14.dp),
+                colors = ButtonDefaults.filledTonalButtonColors(
+                    containerColor = if (selected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surface
+                )
+            ) {
+                Text("${card.name}  ${formatModernMoney(total)}", fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal)
+            }
+        }
+    }
+}
+
+@Composable
+private fun ModernInvoiceScreen(
+    data: ModernAppData,
+    onSelectCard: (String) -> Unit,
+    onDelete: (String) -> Unit
+) {
+    val card = data.cards.firstOrNull { it.id == data.activeCardId } ?: data.cards.first()
+    val periods = modernAvailableInvoicePeriods(data, card)
+    val current = modernInvoiceForPurchase(LocalDate.now(), card)
+    var selectedEnd by remember(card.id) { mutableStateOf(current.end) }
+    val selectedIndexRaw = periods.indexOfFirst { it.end == selectedEnd }
+    val selectedIndex = if (selectedIndexRaw >= 0) selectedIndexRaw else periods.indexOfFirst { it.end == current.end }.coerceAtLeast(0)
+    val period = periods.getOrElse(selectedIndex) { current }
+    val purchases = modernPurchasesForPeriod(data.purchases, card.id, period)
+        .sortedWith(compareByDescending<ModernPurchase> { it.purchaseDate }.thenByDescending { it.createdAtMillis })
+    val total = purchases.sumOf { it.amountCents }
+    var pendingDelete by remember { mutableStateOf<ModernPurchase?>(null) }
+
+    LazyColumn(modifier = Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        item { Spacer(Modifier.height(6.dp)) }
+        item {
+            Text("Faturas", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
+            Text("Escolha o cartão para ver os valores separadamente.", color = Color(0xFF667085))
+        }
+        item { CardSelector(data, onSelectCard) }
+        item {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(22.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primary)
+            ) {
+                Column(modifier = Modifier.padding(18.dp)) {
+                    Text(card.name, color = Color.White.copy(alpha = .78f))
+                    Text(formatModernMoney(total), style = MaterialTheme.typography.headlineLarge, fontWeight = FontWeight.Bold, color = Color.White)
+                    Text(modernInvoiceMonthLabel(period), color = Color.White, fontWeight = FontWeight.SemiBold)
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        "${modernPeriodStatus(period, current)} • vence ${formatModernDate(period.dueDate)}",
+                        color = Color.White.copy(alpha = .78f),
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                }
+            }
+        }
+        item {
+            Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                TextButton(
+                    onClick = { if (selectedIndex < periods.lastIndex) selectedEnd = periods[selectedIndex + 1].end },
+                    enabled = selectedIndex < periods.lastIndex
+                ) { Text("‹ Anterior") }
+                Column(modifier = Modifier.weight(1f), horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text(modernInvoiceMonthLabel(period), fontWeight = FontWeight.Bold)
+                    Text(
+                        "${formatModernDate(period.start)} a ${formatModernDate(period.end.minusDays(1))}",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = Color(0xFF667085)
+                    )
+                }
+                TextButton(
+                    onClick = { if (selectedIndex > 0) selectedEnd = periods[selectedIndex - 1].end },
+                    enabled = selectedIndex > 0
+                ) { Text("Próxima ›") }
+            }
+        }
+        if (purchases.isEmpty()) {
+            item {
+                Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(18.dp)) {
+                    Text("Nenhuma compra nesta fatura.", modifier = Modifier.padding(18.dp), color = Color(0xFF667085))
+                }
+            }
+        } else {
+            items(purchases, key = { it.id }) { purchase ->
+                Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(18.dp)) {
+                    Row(modifier = Modifier.padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Box(
+                            modifier = Modifier.size(42.dp).background(MaterialTheme.colorScheme.surfaceVariant, CircleShape),
+                            contentAlignment = Alignment.Center
+                        ) { Text(modernCategorySymbol(purchase.category), fontSize = 20.sp) }
+                        Spacer(Modifier.width(10.dp))
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(purchase.note.ifBlank { purchase.category }, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            if (purchase.isInstallment) {
+                                Text(
+                                    "Parcela ${purchase.installmentNumber}/${purchase.installmentTotal} • ${purchase.category}",
+                                    color = MaterialTheme.colorScheme.secondary,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                            } else {
+                                Text(purchase.category, style = MaterialTheme.typography.bodySmall, color = Color(0xFF667085))
+                            }
+                            Text("Compra em ${formatModernDate(purchase.purchaseDate)}", style = MaterialTheme.typography.labelSmall, color = Color(0xFF98A2B3))
+                        }
+                        Column(horizontalAlignment = Alignment.End) {
+                            Text(formatModernMoney(purchase.amountCents), fontWeight = FontWeight.Bold)
+                            TextButton(onClick = { pendingDelete = purchase }) { Text("Excluir", color = Color(0xFFB42318)) }
+                        }
+                    }
+                }
+            }
+        }
+        item { Spacer(Modifier.height(16.dp)) }
+    }
+
+    pendingDelete?.let { purchase ->
+        AlertDialog(
+            onDismissRequest = { pendingDelete = null },
+            title = { Text(if (purchase.isInstallment) "Excluir esta parcela?" else "Excluir compra?") },
+            text = {
+                Text(
+                    if (purchase.isInstallment) {
+                        "Será excluída apenas a parcela ${purchase.installmentNumber}/${purchase.installmentTotal}."
+                    } else {
+                        "${purchase.note.ifBlank { purchase.category }} — ${formatModernMoney(purchase.amountCents)}"
+                    }
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = { onDelete(purchase.id); pendingDelete = null }) { Text("Excluir", color = Color(0xFFB42318)) }
+            },
+            dismissButton = { TextButton(onClick = { pendingDelete = null }) { Text("Cancelar") } }
+        )
+    }
+}
+
+@Composable
+private fun ModernAnalysisScreen(data: ModernAppData, onSelectCard: (String) -> Unit) {
+    val card = data.cards.firstOrNull { it.id == data.activeCardId } ?: data.cards.first()
+    val current = modernInvoiceForPurchase(LocalDate.now(), card)
+    val currentPurchases = modernPurchasesForPeriod(data.purchases, card.id, current)
+    val total = currentPurchases.sumOf { it.amountCents }
+    val categoryTotals = currentPurchases.groupBy { it.category }
+        .mapValues { (_, values) -> values.sumOf { it.amountCents } }
+        .toList()
+        .sortedByDescending { it.second }
+    val periods = modernAnalysisPeriods(data, card)
+    val monthlyValues = periods.map { period -> modernPurchasesForPeriod(data.purchases, card.id, period).sumOf { it.amountCents } }
+    var showTrend by remember { mutableStateOf(true) }
+
+    LazyColumn(modifier = Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        item { Spacer(Modifier.height(6.dp)) }
+        item {
+            Text("Análises", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
+            Text("Histórico e comportamento por cartão.", color = Color(0xFF667085))
+        }
+        item { CardSelector(data, onSelectCard) }
+        item {
+            Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(20.dp)) {
+                Column(modifier = Modifier.padding(18.dp)) {
+                    Text("Fatura atual • ${card.name}", color = Color(0xFF667085))
+                    Text(formatModernMoney(total), style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
+                    if (currentPurchases.isNotEmpty()) {
+                        Text("${currentPurchases.size} lançamentos • ticket médio ${formatModernMoney(total / currentPurchases.size)}", style = MaterialTheme.typography.bodySmall)
+                    }
+                }
+            }
+        }
+        item {
+            Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(20.dp)) {
+                Column(modifier = Modifier.padding(18.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("Últimas 6 faturas", fontWeight = FontWeight.Bold)
+                            Text("Cada cor representa um mês", style = MaterialTheme.typography.bodySmall, color = Color(0xFF667085))
+                        }
+                        Text("Tendência", style = MaterialTheme.typography.labelMedium)
+                        Spacer(Modifier.width(6.dp))
+                        Switch(checked = showTrend, onCheckedChange = { showTrend = it })
+                    }
+                    Spacer(Modifier.height(12.dp))
+                    ModernBarChart(monthlyValues, showTrend)
+                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                        periods.forEachIndexed { index, period ->
+                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                Box(modifier = Modifier.size(8.dp).background(modernChartColors[index % modernChartColors.size], CircleShape))
+                                Text(modernShortPeriodLabel(period), style = MaterialTheme.typography.labelSmall)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        item {
+            Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(20.dp)) {
+                Column(modifier = Modifier.padding(18.dp)) {
+                    Text("Categorias nesta fatura", fontWeight = FontWeight.Bold)
+                    Spacer(Modifier.height(12.dp))
+                    if (categoryTotals.isEmpty()) {
+                        Text("Sem dados para analisar.", color = Color(0xFF667085))
+                    } else {
+                        ModernCategoryDonut(categoryTotals)
+                        Spacer(Modifier.height(10.dp))
+                        categoryTotals.take(6).forEachIndexed { index, (category, cents) ->
+                            Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                                Box(modifier = Modifier.size(10.dp).background(modernChartColors[index % modernChartColors.size], CircleShape))
+                                Spacer(Modifier.width(8.dp))
+                                Text("${modernCategorySymbol(category)} $category", modifier = Modifier.weight(1f))
+                                Text(formatModernMoney(cents), fontWeight = FontWeight.SemiBold)
+                            }
+                            Spacer(Modifier.height(6.dp))
+                        }
+                    }
+                }
+            }
+        }
+        item { Spacer(Modifier.height(16.dp)) }
+    }
+}
+
+@Composable
+private fun ModernBarChart(values: List<Long>, showTrend: Boolean) {
+    val guideColor = MaterialTheme.colorScheme.outlineVariant
+    val trendColor = MaterialTheme.colorScheme.primary
+    val maxValue = (values.maxOrNull() ?: 0L).coerceAtLeast(1L)
+    Canvas(modifier = Modifier.fillMaxWidth().height(155.dp)) {
+        drawLine(guideColor, Offset(0f, size.height), Offset(size.width, size.height), strokeWidth = 2f)
+        if (values.isEmpty()) return@Canvas
+        val slot = size.width / values.size
+        val barWidth = slot * .56f
+        values.forEachIndexed { index, value ->
+            val barHeight = size.height * .84f * (value.toFloat() / maxValue.toFloat())
+            val x = index * slot + (slot - barWidth) / 2f
+            drawRect(
+                color = modernChartColors[index % modernChartColors.size],
+                topLeft = Offset(x, size.height - barHeight),
+                size = Size(barWidth, barHeight)
+            )
+        }
+        if (showTrend && values.size >= 2) {
+            val n = values.size.toDouble()
+            val sumX = values.indices.sumOf { it.toDouble() }
+            val sumY = values.sumOf { it.toDouble() }
+            val sumXY = values.indices.sumOf { it.toDouble() * values[it].toDouble() }
+            val sumXX = values.indices.sumOf { it.toDouble() * it.toDouble() }
+            val denominator = n * sumXX - sumX * sumX
+            val slope = if (denominator == 0.0) 0.0 else (n * sumXY - sumX * sumY) / denominator
+            val intercept = (sumY - slope * sumX) / n
+            fun yFor(index: Int): Float {
+                val predicted = max(0.0, intercept + slope * index)
+                val h = size.height * .84f * (predicted.toFloat() / maxValue.toFloat())
+                return size.height - h
+            }
+            drawLine(
+                color = trendColor,
+                start = Offset(slot / 2f, yFor(0)),
+                end = Offset(size.width - slot / 2f, yFor(values.lastIndex)),
+                strokeWidth = 4f
+            )
+        }
+    }
+}
+
+@Composable
+private fun ModernCategoryDonut(categoryTotals: List<Pair<String, Long>>) {
+    val total = categoryTotals.sumOf { it.second }.coerceAtLeast(1L)
+    Canvas(modifier = Modifier.fillMaxWidth().height(175.dp)) {
+        val diameter = size.minDimension * .84f
+        val topLeft = Offset((size.width - diameter) / 2f, (size.height - diameter) / 2f)
+        var startAngle = -90f
+        categoryTotals.forEachIndexed { index, (_, cents) ->
+            val sweep = 360f * cents.toFloat() / total.toFloat()
+            drawArc(
+                color = modernChartColors[index % modernChartColors.size],
+                startAngle = startAngle,
+                sweepAngle = sweep,
+                useCenter = false,
+                topLeft = topLeft,
+                size = Size(diameter, diameter),
+                style = Stroke(width = diameter * .24f)
+            )
+            startAngle += sweep
+        }
+    }
+}
+
+@Composable
+private fun ModernSettingsScreen(
+    data: ModernAppData,
+    onSelectCard: (String) -> Unit,
+    onSaveCard: (ModernCardProfile) -> Unit,
+    onCategoriesChanged: (List<String>) -> Unit
+) {
+    val card = data.cards.firstOrNull { it.id == data.activeCardId } ?: data.cards.first()
+    var name by remember(card.id, card.name) { mutableStateOf(card.name) }
+    var closingDay by remember(card.id, card.closingDay) { mutableStateOf(card.closingDay.toString()) }
+    var dueDay by remember(card.id, card.dueDay) { mutableStateOf(card.dueDay.toString()) }
+    var message by remember(card.id) { mutableStateOf<String?>(null) }
+    var newCategory by remember { mutableStateOf("") }
+    val current = modernInvoiceForPurchase(LocalDate.now(), card)
+
+    LazyColumn(modifier = Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        item { Spacer(Modifier.height(6.dp)) }
+        item {
+            Text("Ajustes", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
+            Text("Configurações independentes para cada cartão.", color = Color(0xFF667085))
+        }
+        item { CardSelector(data, onSelectCard) }
+        item {
+            Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(20.dp)) {
+                Column(modifier = Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Text("Configurar ${card.name}", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                    OutlinedTextField(
+                        value = name,
+                        onValueChange = { name = it.take(28); message = null },
+                        modifier = Modifier.fillMaxWidth(),
+                        label = { Text("Nome do cartão") },
+                        singleLine = true
+                    )
+                    OutlinedTextField(
+                        value = closingDay,
+                        onValueChange = { closingDay = it.filter(Char::isDigit).take(2); message = null },
+                        modifier = Modifier.fillMaxWidth(),
+                        label = { Text("Dia do fechamento") },
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        singleLine = true
+                    )
+                    OutlinedTextField(
+                        value = dueDay,
+                        onValueChange = { dueDay = it.filter(Char::isDigit).take(2); message = null },
+                        modifier = Modifier.fillMaxWidth(),
+                        label = { Text("Dia do vencimento") },
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        singleLine = true
+                    )
+                    Card(
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer),
+                        shape = RoundedCornerShape(16.dp)
+                    ) {
+                        Column(modifier = Modifier.fillMaxWidth().padding(14.dp)) {
+                            Text("Ciclo atual", fontWeight = FontWeight.Bold)
+                            Text("Compras ${formatModernDate(current.start)} a ${formatModernDate(current.end.minusDays(1))}")
+                            Text("Fecha ${formatModernDate(current.end)} • vence ${formatModernDate(current.dueDate)}")
+                            Text("Melhor compra: ${modernDayLabel(current.end.plusDays(1))}", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.SemiBold)
+                        }
+                    }
+                    Button(
+                        onClick = {
+                            val c = closingDay.toIntOrNull()
+                            val d = dueDay.toIntOrNull()
+                            val cleanName = name.trim()
+                            when {
+                                cleanName.isBlank() -> message = "Informe um nome para o cartão."
+                                c == null || d == null || c !in 1..31 || d !in 1..31 -> message = "Informe dias entre 1 e 31."
+                                else -> {
+                                    onSaveCard(card.copy(name = cleanName, closingDay = c, dueDay = d))
+                                    message = "Cartão salvo. O histórico anterior foi preservado."
+                                }
+                            }
+                        },
+                        modifier = Modifier.fillMaxWidth().height(52.dp),
+                        shape = RoundedCornerShape(16.dp)
+                    ) { Text("Salvar cartão", fontWeight = FontWeight.Bold) }
+                    message?.let { Text(it, color = MaterialTheme.colorScheme.primary) }
+                }
+            }
+        }
+        item {
+            Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(20.dp)) {
+                Column(modifier = Modifier.padding(18.dp)) {
+                    Text("Categorias", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                    Text("As categorias são compartilhadas entre todos os cartões.", color = Color(0xFF667085), style = MaterialTheme.typography.bodySmall)
+                    Spacer(Modifier.height(12.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                        OutlinedTextField(
+                            value = newCategory,
+                            onValueChange = { newCategory = it.take(28) },
+                            modifier = Modifier.weight(1f),
+                            label = { Text("Nova categoria") },
+                            singleLine = true
+                        )
+                        Button(
+                            onClick = {
+                                val cleaned = newCategory.trim()
+                                if (cleaned.isNotEmpty() && data.categories.none { it.equals(cleaned, ignoreCase = true) }) {
+                                    onCategoriesChanged((data.categories + cleaned).distinct())
+                                    newCategory = ""
+                                }
+                            },
+                            modifier = Modifier.height(54.dp)
+                        ) { Text("+") }
+                    }
+                    Spacer(Modifier.height(8.dp))
+                    data.categories.forEachIndexed { index, category ->
+                        Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                            Text(modernCategorySymbol(category), fontSize = 20.sp)
+                            Spacer(Modifier.width(10.dp))
+                            Text(category, modifier = Modifier.weight(1f))
+                            if (category != "Outros") {
+                                TextButton(onClick = {
+                                    val updated = data.categories.filterNot { it == category }
+                                    onCategoriesChanged(if (updated.isEmpty()) listOf("Outros") else updated)
+                                }) { Text("Excluir", color = Color(0xFFB42318)) }
+                            }
+                        }
+                        if (index < data.categories.lastIndex) HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                    }
+                }
+            }
+        }
+        item {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(20.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer)
+            ) {
+                Column(modifier = Modifier.padding(18.dp)) {
+                    Text("Leve e privado", fontWeight = FontWeight.Bold)
+                    Spacer(Modifier.height(6.dp))
+                    Text("• Sem internet e sem serviços rodando em segundo plano.")
+                    Text("• Dados criptografados com AES-GCM e chave no Android Keystore.")
+                    Text("• Interface usa listas sob demanda para evitar carregar itens fora da tela.")
+                    Text("• Evite salvar número do cartão, CVV ou senha nas descrições.")
+                }
+            }
+        }
+        item { Spacer(Modifier.height(16.dp)) }
+    }
+}
+
+private fun normalizeModernData(data: ModernAppData): ModernAppData {
+    val cards = data.cards.mapIndexed { index, card ->
+        card.copy(
+            name = card.name.trim().ifBlank { "Cartão ${index + 1}" },
+            closingDay = card.closingDay.coerceIn(1, 31),
+            dueDay = card.dueDay.coerceIn(1, 31)
+        )
+    }.distinctBy { it.id }.ifEmpty { listOf(ModernCardProfile(id = LEGACY_CARD_ID, name = "Cartão 1")) }
+    val active = if (cards.any { it.id == data.activeCardId }) data.activeCardId else cards.first().id
+    val categories = data.categories.map { it.trim() }.filter { it.isNotEmpty() }.distinct().toMutableList()
+    if (categories.none { it == "Outros" }) categories.add("Outros")
+    val validIds = cards.map { it.id }.toSet()
+    val purchases = data.purchases.map { purchase ->
+        if (purchase.cardId in validIds) purchase else purchase.copy(cardId = cards.first().id)
+    }
+    return data.copy(cards = cards, activeCardId = active, purchases = purchases, categories = categories)
+}
+
+private fun modernAssignInvoice(purchase: ModernPurchase, card: ModernCardProfile): ModernPurchase {
+    if (purchase.invoiceStartEpochDay != null && purchase.invoiceEndEpochDay != null && purchase.invoiceDueEpochDay != null) return purchase
+    return modernAssignToPeriod(purchase, modernInvoiceForPurchase(purchase.purchaseDate, card))
+}
+
+private fun modernAssignToPeriod(purchase: ModernPurchase, period: ModernInvoicePeriod): ModernPurchase = purchase.copy(
+    invoiceStartEpochDay = period.start.toEpochDay(),
+    invoiceEndEpochDay = period.end.toEpochDay(),
+    invoiceDueEpochDay = period.dueDate.toEpochDay()
+)
+
+private fun modernBuildInstallmentSeries(base: ModernPurchase, count: Int, card: ModernCardProfile): List<ModernPurchase> {
+    val groupId = UUID.randomUUID().toString()
+    val result = ArrayList<ModernPurchase>(count)
+    var period = modernInvoiceForPurchase(base.purchaseDate, card)
+    repeat(count) { index ->
+        val installment = base.copy(
+            id = UUID.randomUUID().toString(),
+            createdAtMillis = base.createdAtMillis + index,
+            installmentGroupId = groupId,
+            installmentNumber = index + 1,
+            installmentTotal = count,
+            invoiceStartEpochDay = null,
+            invoiceEndEpochDay = null,
+            invoiceDueEpochDay = null
+        )
+        result.add(modernAssignToPeriod(installment, period))
+        period = modernNextInvoicePeriod(period, card)
+    }
+    return result
+}
+
+private fun modernInstallmentPeriod(purchaseDate: LocalDate, installmentNumber: Int, card: ModernCardProfile): ModernInvoicePeriod {
+    var period = modernInvoiceForPurchase(purchaseDate, card)
+    repeat((installmentNumber - 1).coerceAtLeast(0)) { period = modernNextInvoicePeriod(period, card) }
+    return period
+}
+
+private fun modernNextInvoicePeriod(period: ModernInvoicePeriod, card: ModernCardProfile): ModernInvoicePeriod {
+    val nextMonth = period.end.plusMonths(1)
+    val end = modernDateAtDay(nextMonth.year, nextMonth.monthValue, card.closingDay)
+    val previousMonth = end.minusMonths(1)
+    val start = modernDateAtDay(previousMonth.year, previousMonth.monthValue, card.closingDay)
+    val dueBase = if (card.dueDay > card.closingDay) end else end.plusMonths(1)
+    val dueDate = modernDateAtDay(dueBase.year, dueBase.monthValue, card.dueDay)
+    return ModernInvoicePeriod(start, end, dueDate)
+}
+
+private fun modernInvoiceForPurchase(date: LocalDate, card: ModernCardProfile): ModernInvoicePeriod {
+    val closeThisMonth = modernDateAtDay(date.year, date.monthValue, card.closingDay)
+    val end = if (!date.isBefore(closeThisMonth)) {
+        val next = date.plusMonths(1)
+        modernDateAtDay(next.year, next.monthValue, card.closingDay)
+    } else {
+        closeThisMonth
+    }
+    val previousMonth = end.minusMonths(1)
+    val start = modernDateAtDay(previousMonth.year, previousMonth.monthValue, card.closingDay)
+    val dueBase = if (card.dueDay > card.closingDay) end else end.plusMonths(1)
+    val dueDate = modernDateAtDay(dueBase.year, dueBase.monthValue, card.dueDay)
+    return ModernInvoicePeriod(start, end, dueDate)
+}
+
+private fun modernPurchasePeriod(purchase: ModernPurchase, card: ModernCardProfile): ModernInvoicePeriod {
+    val start = purchase.invoiceStartEpochDay
+    val end = purchase.invoiceEndEpochDay
+    val due = purchase.invoiceDueEpochDay
+    return if (start != null && end != null && due != null) {
+        ModernInvoicePeriod(LocalDate.ofEpochDay(start), LocalDate.ofEpochDay(end), LocalDate.ofEpochDay(due))
+    } else {
+        modernInvoiceForPurchase(purchase.purchaseDate, card)
+    }
+}
+
+private fun modernPurchasesForPeriod(
+    purchases: List<ModernPurchase>,
+    cardId: String,
+    period: ModernInvoicePeriod
+): List<ModernPurchase> = purchases.filter { it.cardId == cardId && it.invoiceEndEpochDay == period.end.toEpochDay() }
+
+private fun modernAvailableInvoicePeriods(data: ModernAppData, card: ModernCardProfile): List<ModernInvoicePeriod> {
+    val current = modernInvoiceForPurchase(LocalDate.now(), card)
+    val fromPurchases = data.purchases.asSequence()
+        .filter { it.cardId == card.id }
+        .map { modernPurchasePeriod(it, card) }
+        .toList()
+    val previous = modernInvoiceForPurchase(current.start.minusDays(1), card)
+    return (listOf(current, previous) + fromPurchases).distinctBy { it.end }.sortedByDescending { it.end }
+}
+
+private fun modernAnalysisPeriods(data: ModernAppData, card: ModernCardProfile): List<ModernInvoicePeriod> {
+    val current = modernInvoiceForPurchase(LocalDate.now(), card)
+    val available = modernAvailableInvoicePeriods(data, card).filter { !it.end.isAfter(current.end) }.toMutableList()
+    var cursor = current
+    if (available.none { it.end == cursor.end }) available.add(cursor)
+    while (available.size < 6) {
+        cursor = modernInvoiceForPurchase(cursor.start.minusDays(1), card)
+        if (available.none { it.end == cursor.end }) available.add(cursor)
+    }
+    return available.sortedBy { it.end }.takeLast(6)
+}
+
+private fun modernPeriodStatus(period: ModernInvoicePeriod, current: ModernInvoicePeriod): String = when {
+    period.end.isAfter(current.end) -> "Fatura futura"
+    period.end.isBefore(current.end) -> "Fatura fechada"
+    else -> "Fatura atual"
+}
+
+private fun modernDateAtDay(year: Int, month: Int, requestedDay: Int): LocalDate {
+    val ym = YearMonth.of(year, month)
+    return LocalDate.of(year, month, requestedDay.coerceIn(1, ym.lengthOfMonth()))
+}
+
+private fun modernCategorySymbol(category: String): String = when (category) {
+    "Mercado" -> "🛒"
+    "Padaria" -> "🥖"
+    "Posto de gasolina" -> "⛽"
+    "Estacionamento" -> "🅿"
+    "Transporte" -> "🚌"
+    "Restaurante" -> "🍽"
+    "Lazer" -> "🎮"
+    "Farmácia" -> "💊"
+    "Saúde" -> "❤"
+    "Casa" -> "⌂"
+    "Assinaturas" -> "↻"
+    "Roupas" -> "👕"
+    "Educação" -> "🎓"
+    "Viagem" -> "✈"
+    else -> "•"
+}
+
+private fun formatModernDate(date: LocalDate): String = date.format(DateTimeFormatter.ofPattern("dd/MM/yyyy"))
+private fun modernDayLabel(date: LocalDate): String = date.format(DateTimeFormatter.ofPattern("dd/MM"))
+private fun modernInvoiceMonthLabel(period: ModernInvoicePeriod): String =
+    period.dueDate.format(DateTimeFormatter.ofPattern("MMM/yyyy", Locale("pt", "BR"))).replaceFirstChar { it.uppercase() }
+private fun modernShortPeriodLabel(period: ModernInvoicePeriod): String =
+    period.dueDate.format(DateTimeFormatter.ofPattern("MMM", Locale("pt", "BR"))).replaceFirstChar { it.uppercase() }
+
+private fun formatModernMoney(cents: Long): String {
+    val formatter = NumberFormat.getCurrencyInstance(Locale("pt", "BR"))
+    return formatter.format(BigDecimal(cents).divide(BigDecimal(100)))
+}
+
+private fun parseModernMoneyToCents(raw: String): Long? {
+    val cleaned = raw.trim().replace("R$", "").replace(" ", "")
+    if (cleaned.isBlank()) return null
+    val normalized = if (cleaned.contains(',')) cleaned.replace(".", "").replace(',', '.') else cleaned
+    return normalized.toBigDecimalOrNull()
+        ?.setScale(2, RoundingMode.HALF_UP)
+        ?.multiply(BigDecimal(100))
+        ?.longValueExact()
+}
+
+private class ModernSecureStore(private val context: Context) {
+    private val fileName = "card_data.enc"
+    private val alias = "app_cartao_aes_key_v1"
+
+    fun read(): ModernAppData {
+        val file = context.filesDir.resolve(fileName)
+        if (!file.exists()) return ModernAppData()
+        return try {
+            val parts = file.readText().split(':', limit = 2)
+            require(parts.size == 2)
+            val iv = Base64.decode(parts[0], Base64.NO_WRAP)
+            val encrypted = Base64.decode(parts[1], Base64.NO_WRAP)
+            val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+            cipher.init(Cipher.DECRYPT_MODE, getOrCreateKey(), GCMParameterSpec(128, iv))
+            val json = String(cipher.doFinal(encrypted), Charsets.UTF_8)
+            normalizeModernData(fromJson(JSONObject(json)))
+        } catch (_: Exception) {
+            ModernAppData()
+        }
+    }
+
+    fun write(data: ModernAppData) {
+        val plain = toJson(data).toString().toByteArray(Charsets.UTF_8)
+        val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+        cipher.init(Cipher.ENCRYPT_MODE, getOrCreateKey())
+        val encrypted = cipher.doFinal(plain)
+        val encoded = Base64.encodeToString(cipher.iv, Base64.NO_WRAP) + ":" + Base64.encodeToString(encrypted, Base64.NO_WRAP)
+        val temp = context.filesDir.resolve("$fileName.tmp")
+        temp.writeText(encoded)
+        val target = context.filesDir.resolve(fileName)
+        if (target.exists()) target.delete()
+        check(temp.renameTo(target))
+    }
+
+    private fun getOrCreateKey(): SecretKey {
+        val keyStore = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
+        val existing = keyStore.getKey(alias, null) as? SecretKey
+        if (existing != null) return existing
+        val generator = KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, "AndroidKeyStore")
+        val spec = KeyGenParameterSpec.Builder(alias, KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT)
+            .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
+            .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
+            .setKeySize(256)
+            .build()
+        generator.init(spec)
+        return generator.generateKey()
+    }
+
+    private fun toJson(data: ModernAppData): JSONObject {
+        return JSONObject().apply {
+            put("dataVersion", MODERN_DATA_VERSION)
+            put("activeCardId", data.activeCardId)
+            put("cards", JSONArray().apply {
+                data.cards.forEach { card ->
+                    put(JSONObject().apply {
+                        put("id", card.id)
+                        put("name", card.name)
+                        put("closingDay", card.closingDay)
+                        put("dueDay", card.dueDay)
+                    })
+                }
+            })
+            put("categories", JSONArray().apply { data.categories.forEach { put(it) } })
+            put("purchases", JSONArray().apply {
+                data.purchases.forEach { p ->
+                    put(JSONObject().apply {
+                        put("id", p.id)
+                        put("cardId", p.cardId)
+                        put("amountCents", p.amountCents)
+                        put("purchaseEpochDay", p.purchaseDate.toEpochDay())
+                        put("createdAtMillis", p.createdAtMillis)
+                        put("category", p.category)
+                        put("note", p.note)
+                        p.invoiceStartEpochDay?.let { put("invoiceStartEpochDay", it) }
+                        p.invoiceEndEpochDay?.let { put("invoiceEndEpochDay", it) }
+                        p.invoiceDueEpochDay?.let { put("invoiceDueEpochDay", it) }
+                        p.installmentGroupId?.let { put("installmentGroupId", it) }
+                        p.installmentNumber?.let { put("installmentNumber", it) }
+                        p.installmentTotal?.let { put("installmentTotal", it) }
+                    })
+                }
+            })
+        }
+    }
+
+    private fun fromJson(root: JSONObject): ModernAppData {
+        val dataVersion = root.optInt("dataVersion", 1)
+        val cardsJson = root.optJSONArray("cards")
+        val cards: List<ModernCardProfile>
+        val activeCardId: String
+
+        if (cardsJson == null || cardsJson.length() == 0) {
+            val settingsJson = root.optJSONObject("settings") ?: JSONObject()
+            val legacyStartDay = settingsJson.optInt("invoiceStartDay", 6).coerceIn(1, 31)
+            val inferredClosing = if (legacyStartDay > 1) legacyStartDay - 1 else 31
+            val legacyCard = ModernCardProfile(
+                id = LEGACY_CARD_ID,
+                name = "Cartão 1",
+                closingDay = settingsJson.optInt("closingDay", inferredClosing).coerceIn(1, 31),
+                dueDay = settingsJson.optInt("dueDay", 12).coerceIn(1, 31)
+            )
+            cards = listOf(legacyCard)
+            activeCardId = legacyCard.id
+        } else {
+            cards = buildList {
+                for (i in 0 until cardsJson.length()) {
+                    val c = cardsJson.getJSONObject(i)
+                    add(
+                        ModernCardProfile(
+                            id = c.optString("id", UUID.randomUUID().toString()),
+                            name = c.optString("name", "Cartão ${i + 1}"),
+                            closingDay = c.optInt("closingDay", 5).coerceIn(1, 31),
+                            dueDay = c.optInt("dueDay", 12).coerceIn(1, 31)
+                        )
+                    )
+                }
+            }
+            activeCardId = root.optString("activeCardId", cards.first().id).ifBlank { cards.first().id }
+        }
+
+        val categoriesJson = root.optJSONArray("categories")
+        val categories = if (categoriesJson == null) modernDefaultCategories else buildList {
+            for (i in 0 until categoriesJson.length()) {
+                val value = categoriesJson.optString(i).trim()
+                if (value.isNotEmpty()) add(value)
+            }
+        }.ifEmpty { modernDefaultCategories }
+
+        val firstCard = cards.first()
+        val cardById = cards.associateBy { it.id }
+        val purchasesJson = root.optJSONArray("purchases") ?: JSONArray()
+        val purchases = buildList {
+            for (i in 0 until purchasesJson.length()) {
+                val p = purchasesJson.getJSONObject(i)
+                val cardId = p.optString("cardId", firstCard.id).ifBlank { firstCard.id }
+                val card = cardById[cardId] ?: firstCard
+                var raw = ModernPurchase(
+                    id = p.optString("id", UUID.randomUUID().toString()),
+                    cardId = card.id,
+                    amountCents = p.optLong("amountCents", 0L),
+                    purchaseDate = LocalDate.ofEpochDay(p.optLong("purchaseEpochDay", LocalDate.now().toEpochDay())),
+                    createdAtMillis = p.optLong("createdAtMillis", Instant.now().toEpochMilli()),
+                    category = p.optString("category", "Outros"),
+                    note = p.optString("note", ""),
+                    invoiceStartEpochDay = if (p.has("invoiceStartEpochDay")) p.optLong("invoiceStartEpochDay") else null,
+                    invoiceEndEpochDay = if (p.has("invoiceEndEpochDay")) p.optLong("invoiceEndEpochDay") else null,
+                    invoiceDueEpochDay = if (p.has("invoiceDueEpochDay")) p.optLong("invoiceDueEpochDay") else null,
+                    installmentGroupId = p.optString("installmentGroupId", "").ifBlank { null },
+                    installmentNumber = if (p.has("installmentNumber")) p.optInt("installmentNumber") else null,
+                    installmentTotal = if (p.has("installmentTotal")) p.optInt("installmentTotal") else null
+                )
+
+                if (dataVersion < 3 && raw.isInstallment) {
+                    val number = raw.installmentNumber ?: 1
+                    raw = modernAssignToPeriod(
+                        raw.copy(invoiceStartEpochDay = null, invoiceEndEpochDay = null, invoiceDueEpochDay = null),
+                        modernInstallmentPeriod(raw.purchaseDate, number, card)
+                    )
+                } else if (raw.invoiceStartEpochDay == null || raw.invoiceEndEpochDay == null || raw.invoiceDueEpochDay == null) {
+                    raw = modernAssignInvoice(raw, card)
+                } else if (dataVersion < 2) {
+                    val closeDate = modernDateAtDay(raw.purchaseDate.year, raw.purchaseDate.monthValue, card.closingDay)
+                    if (raw.purchaseDate == closeDate) {
+                        raw = modernAssignInvoice(
+                            raw.copy(invoiceStartEpochDay = null, invoiceEndEpochDay = null, invoiceDueEpochDay = null),
+                            card
+                        )
+                    }
+                }
+                add(raw)
+            }
+        }
+
+        return ModernAppData(cards = cards, activeCardId = activeCardId, purchases = purchases, categories = categories)
+    }
+}

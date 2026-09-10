@@ -173,19 +173,33 @@ class ModernCardActivity : ComponentActivity() {
     private val cloudAuthorizationLauncher =
         registerForActivityResult(ActivityResultContracts.StartIntentSenderForResult()) { result ->
             val callback = pendingCloudCallback
-            if (result.resultCode != RESULT_OK || result.data == null) {
-                pendingCloudCallback = null
-                callback?.invoke(CloudSyncResult(false, "Conexão com a Conta Google cancelada."))
-                return@registerForActivityResult
+            if (callback == null) return@registerForActivityResult
+
+            // Some Google Play Services versions can return an authorization payload
+            // even when the Activity result code is not RESULT_OK. Always inspect the
+            // payload first so a valid grant is not incorrectly reported as cancelled.
+            result.data?.let { intent ->
+                try {
+                    val authorization = cloudSync.authorizationResultFromIntent(intent)
+                    finishCloudAuthorization(authorization, callback)
+                    return@registerForActivityResult
+                } catch (error: Exception) {
+                    if (result.resultCode == RESULT_OK) {
+                        pendingCloudCallback = null
+                        callback(CloudSyncResult(false, cloudSync.authorizationErrorMessage(error)))
+                        return@registerForActivityResult
+                    }
+                }
             }
 
-            try {
-                val authorization = cloudSync.authorizationResultFromIntent(result.data!!)
-                finishCloudAuthorization(authorization, callback)
-            } catch (_: Exception) {
-                pendingCloudCallback = null
-                callback?.invoke(CloudSyncResult(false, "Não foi possível concluir a autorização do Google Drive."))
-            }
+            // Re-check silently after the authorization UI closes. If access was
+            // granted, finish normally. If the user really cancelled, Google will
+            // still report a resolution as required. Configuration errors are now
+            // surfaced instead of being mislabeled as cancellation.
+            recheckAuthorizationAfterResolution(
+                callback = callback,
+                userCancelled = result.resultCode != RESULT_OK
+            )
         }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -211,7 +225,12 @@ class ModernCardActivity : ComponentActivity() {
                 when {
                     error != null || authorization == null -> {
                         pendingCloudCallback = null
-                        callback(CloudSyncResult(false, "Não foi possível acessar a Conta Google."))
+                        val message = if (error != null) {
+                            cloudSync.authorizationErrorMessage(error)
+                        } else {
+                            "O Google não retornou uma autorização válida."
+                        }
+                        callback(CloudSyncResult(false, message))
                     }
                     authorization.hasResolution() -> {
                         val pendingIntent = authorization.pendingIntent
@@ -225,6 +244,34 @@ class ModernCardActivity : ComponentActivity() {
                         }
                     }
                     else -> finishCloudAuthorization(authorization, callback)
+                }
+            }
+        }
+    }
+
+    private fun recheckAuthorizationAfterResolution(
+        callback: ((CloudSyncResult) -> Unit)?,
+        userCancelled: Boolean
+    ) {
+        cloudSync.requestAuthorization { authorization, error ->
+            runOnUiThread {
+                when {
+                    error != null -> {
+                        pendingCloudCallback = null
+                        callback?.invoke(CloudSyncResult(false, cloudSync.authorizationErrorMessage(error)))
+                    }
+                    authorization != null && !authorization.hasResolution() && !authorization.accessToken.isNullOrBlank() -> {
+                        finishCloudAuthorization(authorization, callback)
+                    }
+                    else -> {
+                        pendingCloudCallback = null
+                        val message = if (userCancelled) {
+                            "Conexão com a Conta Google cancelada."
+                        } else {
+                            "A Conta Google ainda não autorizou o backup. Tente novamente."
+                        }
+                        callback?.invoke(CloudSyncResult(false, message))
+                    }
                 }
             }
         }
@@ -841,28 +888,28 @@ private fun ModernInvoiceScreen(
                             Text(formatModernMoney(purchase.amountCents), fontWeight = FontWeight.Bold)
                             Box(
                                 modifier = Modifier
-                                    .size(30.dp)
+                                    .size(26.dp)
                                     .clickable { pendingEdit = purchase },
                                 contentAlignment = Alignment.Center
                             ) {
                                 Icon(
                                     imageVector = Icons.Outlined.Edit,
                                     contentDescription = "Editar valor",
-                                    tint = Color(0xFF667085),
-                                    modifier = Modifier.size(16.dp)
+                                    tint = Color(0xFF7A8493),
+                                    modifier = Modifier.size(15.dp)
                                 )
                             }
                             Box(
                                 modifier = Modifier
-                                    .size(30.dp)
+                                    .size(26.dp)
                                     .clickable { pendingDelete = purchase },
                                 contentAlignment = Alignment.Center
                             ) {
                                 Icon(
                                     imageVector = Icons.Outlined.DeleteOutline,
                                     contentDescription = "Excluir compra",
-                                    tint = Color(0xFFB42318),
-                                    modifier = Modifier.size(16.dp)
+                                    tint = Color(0xFFC62828),
+                                    modifier = Modifier.size(15.dp)
                                 )
                             }
                         }
@@ -1469,7 +1516,7 @@ private fun ModernSettingsScreen(
                             if (category != "Outros") {
                                 Box(
                                     modifier = Modifier
-                                        .size(30.dp)
+                                        .size(26.dp)
                                         .clickable {
                                             val updated = data.categories.filterNot { it == category }
                                             onCategoriesChanged(if (updated.isEmpty()) listOf("Outros") else updated)
@@ -1479,8 +1526,8 @@ private fun ModernSettingsScreen(
                                     Icon(
                                         imageVector = Icons.Outlined.DeleteOutline,
                                         contentDescription = "Excluir categoria",
-                                        tint = Color(0xFFB42318),
-                                        modifier = Modifier.size(16.dp)
+                                        tint = Color(0xFFC62828),
+                                        modifier = Modifier.size(15.dp)
                                     )
                                 }
                             }

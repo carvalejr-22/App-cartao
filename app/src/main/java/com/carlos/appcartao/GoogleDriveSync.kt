@@ -15,6 +15,8 @@ import com.google.android.gms.auth.api.identity.AuthorizationRequest
 import com.google.android.gms.auth.api.identity.AuthorizationResult
 import com.google.android.gms.auth.api.identity.Identity
 import com.google.android.gms.auth.api.identity.RevokeAccessRequest
+import com.google.android.gms.common.api.ApiException
+import com.google.android.gms.common.api.CommonStatusCodes
 import com.google.android.gms.common.api.Scope
 import com.google.android.gms.tasks.Tasks
 import org.json.JSONArray
@@ -271,6 +273,29 @@ class GoogleDriveSync(private val context: Context) {
             return response
         } finally {
             connection.disconnect()
+        }
+    }
+
+    fun authorizationErrorMessage(error: Exception): String {
+        val apiError = error as? ApiException
+        return when (apiError?.statusCode) {
+            CommonStatusCodes.CANCELED -> "Conexão com a Conta Google cancelada."
+            CommonStatusCodes.DEVELOPER_ERROR ->
+                "O backup Google ainda não está configurado para a assinatura desta versão do app. Cadastre o pacote com o SHA-1 correto no Google Cloud."
+            CommonStatusCodes.NETWORK_ERROR ->
+                "Não foi possível falar com o Google. Verifique a internet e tente novamente."
+            CommonStatusCodes.SIGN_IN_REQUIRED ->
+                "Selecione uma Conta Google e autorize o backup."
+            CommonStatusCodes.RESOLUTION_REQUIRED ->
+                "A Conta Google precisa de uma autorização adicional. Tente conectar novamente."
+            else -> {
+                val status = apiError?.let { CommonStatusCodes.getStatusCodeString(it.statusCode) }
+                if (status.isNullOrBlank()) {
+                    "Não foi possível concluir a autorização da Conta Google."
+                } else {
+                    "Não foi possível concluir a autorização da Conta Google ($status)."
+                }
+            }
         }
     }
 

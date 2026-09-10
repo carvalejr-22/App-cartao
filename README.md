@@ -2,13 +2,14 @@
 
 Aplicativo Android offline-first para controle de compras e faturas de cartão de crédito.
 
-## Recursos atuais — v0.6.0
+## Recursos atuais — v0.6.1
 
 - Registro rápido de valor, data, categoria e descrição opcional.
 - Compras à vista e parceladas, com cada parcela posicionada na fatura correta.
 - Faturas separadas por cartão e histórico preservado por mês.
 - Edição do valor de um lançamento diretamente na fatura.
-- Exclusão por ícone de lixeira, com confirmação antes de apagar.
+- Ações de edição e exclusão compactas na mesma linha do valor, com lápis discreto e lixeira vermelha vetorial.
+- Exclusão com confirmação antes de apagar.
 - Categorias prontas, incluindo Mercado, Padaria, Lanches, Sorvetes, Restaurante, Combustível, Saúde e outras; também permite categorias personalizadas.
 - Análises por categoria e gráficos comparativos com linha de tendência.
 - Funcionamento offline: os dados continuam sendo gravados localmente sem depender da internet.
@@ -20,7 +21,7 @@ Aplicativo Android offline-first para controle de compras e faturas de cartão d
 
 ## APK de teste
 
-Abra a aba **Actions** do repositório, selecione a execução mais recente de **Build Android APK** e baixe o artefato **App-cartao-v0.6.0**. Dentro dele estará o arquivo `app-debug.apk`.
+Abra a aba **Actions** do repositório, selecione a execução mais recente de **Build Android APK** e baixe o artefato mais recente. Dentro dele estará o arquivo `app-debug.apk`.
 
 > A versão `debug` serve para testes. Para publicar na Google Play, gere um Android App Bundle (`.aab`) de release assinado. A chave de assinatura nunca deve ser colocada no repositório público.
 

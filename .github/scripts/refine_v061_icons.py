@@ -104,8 +104,3 @@ if 'androidx.compose.material:material-icons-extended' not in build_text:
         1,
     )
 build.write_text(build_text, encoding='utf-8')
-
-workflow = Path('.github/workflows/build-apk.yml')
-workflow_text = workflow.read_text(encoding='utf-8')
-workflow_text = workflow_text.replace('App-cartao-v0.6.0', 'App-cartao-v0.6.1')
-workflow.write_text(workflow_text, encoding='utf-8')

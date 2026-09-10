@@ -1,4 +1,4 @@
-name: Fix installment billing cycle
+name: Patch modern app compile issue
 
 on:
   push:
@@ -18,139 +18,17 @@ jobs:
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Apply billing-cycle fix
+      - name: Remove invalid Compose import
         shell: bash
         run: |
           python3 - <<'PY'
           from pathlib import Path
-
-          main = Path('app/src/main/java/com/carlos/appcartao/MainActivity.kt')
-          text = main.read_text()
-
-          if 'private const val DATA_VERSION = 2' not in text:
-              raise SystemExit('Unexpected DATA_VERSION; refusing unsafe patch')
-          text = text.replace('private const val DATA_VERSION = 2', 'private const val DATA_VERSION = 3', 1)
-
-          old_series = '''private fun buildInstallmentSeries(base: Purchase, count: Int, settings: CardSettings): List<Purchase> {
-              val groupId = UUID.randomUUID().toString()
-              val result = mutableListOf<Purchase>()
-              var period = invoiceForPurchase(base.purchaseDate, settings)
-              repeat(count) { index ->
-                  val installment = base.copy(
-                      id = UUID.randomUUID().toString(),
-                      createdAtMillis = base.createdAtMillis + index,
-                      installmentGroupId = groupId,
-                      installmentNumber = index + 1,
-                      installmentTotal = count,
-                      invoiceStartEpochDay = null,
-                      invoiceEndEpochDay = null,
-                      invoiceDueEpochDay = null
-                  )
-                  result.add(assignToPeriod(installment, period))
-                  period = invoiceForPurchase(period.end, settings)
-              }
-              return result
-          }
-          '''
-
-          new_series = '''private fun buildInstallmentSeries(base: Purchase, count: Int, settings: CardSettings): List<Purchase> {
-              val groupId = UUID.randomUUID().toString()
-              val result = mutableListOf<Purchase>()
-              var period = invoiceForPurchase(base.purchaseDate, settings)
-              repeat(count) { index ->
-                  val installment = base.copy(
-                      id = UUID.randomUUID().toString(),
-                      createdAtMillis = base.createdAtMillis + index,
-                      installmentGroupId = groupId,
-                      installmentNumber = index + 1,
-                      installmentTotal = count,
-                      invoiceStartEpochDay = null,
-                      invoiceEndEpochDay = null,
-                      invoiceDueEpochDay = null
-                  )
-                  result.add(assignToPeriod(installment, period))
-                  period = nextInvoicePeriod(period, settings)
-              }
-              return result
-          }
-
-          private fun nextInvoicePeriod(period: InvoicePeriod, settings: CardSettings): InvoicePeriod {
-              val nextMonth = period.end.plusMonths(1)
-              val end = dateAtDay(nextMonth.year, nextMonth.monthValue, settings.closingDay)
-              val previousMonth = end.minusMonths(1)
-              val start = dateAtDay(previousMonth.year, previousMonth.monthValue, settings.closingDay)
-              val dueBase = if (settings.dueDay > settings.closingDay) end else end.plusMonths(1)
-              val dueDate = dateAtDay(dueBase.year, dueBase.monthValue, settings.dueDay)
-              return InvoicePeriod(start = start, end = end, dueDate = dueDate)
-          }
-
-          private fun installmentPeriod(
-              purchaseDate: LocalDate,
-              installmentNumber: Int,
-              settings: CardSettings
-          ): InvoicePeriod {
-              var period = invoiceForPurchase(purchaseDate, settings)
-              repeat((installmentNumber - 1).coerceAtLeast(0)) {
-                  period = nextInvoicePeriod(period, settings)
-              }
-              return period
-          }
-          '''
-
-          if old_series not in text:
-              raise SystemExit('buildInstallmentSeries block not found; refusing unsafe patch')
-          text = text.replace(old_series, new_series, 1)
-
-          start_marker = '                if (dataVersion < DATA_VERSION) {'
-          end_marker = '\n\n                add(assignInvoice(raw, settings))'
-          start = text.find(start_marker)
-          if start < 0:
-              raise SystemExit('migration start marker not found; refusing unsafe patch')
-          end = text.find(end_marker, start)
-          if end < 0:
-              raise SystemExit('migration end marker not found; refusing unsafe patch')
-
-          new_migration = '''                if (dataVersion < 2) {
-                      val closingDateInPurchaseMonth = dateAtDay(raw.purchaseDate.year, raw.purchaseDate.monthValue, settings.closingDay)
-                      if (raw.purchaseDate == closingDateInPurchaseMonth) {
-                          raw = raw.copy(
-                              invoiceStartEpochDay = null,
-                              invoiceEndEpochDay = null,
-                              invoiceDueEpochDay = null
-                          )
-                      } else if (raw.invoiceEndEpochDay != null) {
-                          val oldEnd = LocalDate.ofEpochDay(raw.invoiceEndEpochDay)
-                          val previousMonth = oldEnd.minusMonths(1)
-                          val correctedStart = dateAtDay(previousMonth.year, previousMonth.monthValue, settings.closingDay)
-                          raw = raw.copy(invoiceStartEpochDay = correctedStart.toEpochDay())
-                      }
-                  }
-
-                  // v3 corrige parcelamentos históricos deslocados para a fatura errada.
-                  // A parcela 1 sempre nasce na primeira fatura definida pela data real da compra.
-                  if (dataVersion < 3 && raw.isInstallment) {
-                      val number = raw.installmentNumber ?: 1
-                      val correctedPeriod = installmentPeriod(raw.purchaseDate, number, settings)
-                      raw = assignToPeriod(
-                          raw.copy(
-                              invoiceStartEpochDay = null,
-                              invoiceEndEpochDay = null,
-                              invoiceDueEpochDay = null
-                          ),
-                          correctedPeriod
-                      )
-                  }'''
-
-          text = text[:start] + new_migration + text[end:]
-          main.write_text(text)
-
-          gradle = Path('app/build.gradle.kts')
-          g = gradle.read_text()
-          if 'versionCode = 4' not in g or 'versionName = "0.4.0"' not in g:
-              raise SystemExit('Unexpected app version; refusing unsafe version bump')
-          g = g.replace('versionCode = 4', 'versionCode = 5', 1)
-          g = g.replace('versionName = "0.4.0"', 'versionName = "0.4.1"', 1)
-          gradle.write_text(g)
+          path = Path('app/src/main/java/com/carlos/appcartao/ModernCardActivity.kt')
+          text = path.read_text()
+          bad = 'import androidx.compose.foundation.layout.weight\n'
+          if bad not in text:
+              raise SystemExit('Expected import not found')
+          path.write_text(text.replace(bad, '', 1))
           PY
 
       - name: Commit fix
@@ -158,6 +36,6 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add app/src/main/java/com/carlos/appcartao/MainActivity.kt app/build.gradle.kts
-          git commit -m "Fix installment invoice numbering and migration"
+          git add app/src/main/java/com/carlos/appcartao/ModernCardActivity.kt
+          git commit -m "Fix Compose weight import"
           git push

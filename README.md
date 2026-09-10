@@ -1,21 +1,29 @@
-# App Cartão
+# Meu Cartão
 
-Aplicativo Android offline para controle de compras no cartão de crédito.
+Aplicativo Android offline-first para controle de compras e faturas de cartão de crédito.
 
-## Recursos da primeira versão
+## Recursos atuais — v0.6.0
 
 - Registro rápido de valor, data, categoria e descrição opcional.
-- Data de hoje selecionada por padrão e opção de escolher outra data.
-- Fatura atual calculada pelo dia configurado de início do ciclo.
-- Cadastro do melhor dia para compra / virada.
-- Histórico da fatura atual com exclusão de lançamentos.
-- Análise por categoria, ticket médio e gráfico comparativo das últimas faturas.
-- Armazenamento somente no aparelho, sem permissão de internet.
-- Dados criptografados com AES-GCM e chave protegida pelo Android Keystore.
+- Compras à vista e parceladas, com cada parcela posicionada na fatura correta.
+- Faturas separadas por cartão e histórico preservado por mês.
+- Edição do valor de um lançamento diretamente na fatura.
+- Exclusão por ícone de lixeira, com confirmação antes de apagar.
+- Categorias prontas, incluindo Mercado, Padaria, Lanches, Sorvetes, Restaurante, Combustível, Saúde e outras; também permite categorias personalizadas.
+- Análises por categoria e gráficos comparativos com linha de tendência.
+- Funcionamento offline: os dados continuam sendo gravados localmente sem depender da internet.
+- Dados locais criptografados com AES-GCM e chave protegida pelo Android Keystore.
+- Backup opcional na Conta Google usando a pasta privada `appData` do Google Drive.
+- Quando o backup está ativado, novas compras, edições, exclusões e mudanças de configuração entram na fila de sincronização e são enviadas quando houver internet.
+- Ao reinstalar o aplicativo ou trocar de aparelho, a mesma Conta Google pode restaurar o backup existente.
 - GitHub Actions para gerar automaticamente um APK de teste.
 
-## APK
+## APK de teste
 
-Abra a aba **Actions** do repositório, selecione a execução mais recente de **Build Android APK** e baixe o artefato **App-cartao-debug**. Dentro dele estará o arquivo `app-debug.apk`.
+Abra a aba **Actions** do repositório, selecione a execução mais recente de **Build Android APK** e baixe o artefato **App-cartao-v0.6.0**. Dentro dele estará o arquivo `app-debug.apk`.
 
-> A versão `debug` serve para testes pessoais. Uma versão de distribuição definitiva deve ser assinada com uma chave de release mantida fora do repositório.
+> A versão `debug` serve para testes. Para publicar na Google Play, gere um Android App Bundle (`.aab`) de release assinado. A chave de assinatura nunca deve ser colocada no repositório público.
+
+## Backup Google Drive
+
+O código da sincronização já faz parte do aplicativo. Para a autorização funcionar numa versão distribuída, ainda é necessário configurar o projeto no Google Cloud Console: habilitar a Google Drive API e cadastrar o cliente OAuth Android para o pacote `com.carlos.appcartao` com a impressão SHA-1 do certificado usado na assinatura do app. Veja `GOOGLE_DRIVE_SETUP.md`.

@@ -1,0 +1,302 @@
+name: Upgrade App Cartao v0.5.1
+
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - ".github/workflows/upgrade-v051.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  upgrade:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Apply v0.5.1 UX upgrade
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('app/src/main/java/com/carlos/appcartao/ModernCardActivity.kt')
+          text = path.read_text()
+
+          # Settings callback: allow deleting secondary cards only.
+          old = '''                    onSaveCard = { updated ->
+                        persist(data.copy(cards = data.cards.map { if (it.id == updated.id) updated else it }))
+                    },
+                    onCategoriesChanged = { categories -> persist(data.copy(categories = categories)) }
+'''
+          new = '''                    onSaveCard = { updated ->
+                        persist(data.copy(cards = data.cards.map { if (it.id == updated.id) updated else it }))
+                    },
+                    onDeleteCard = { cardId ->
+                        val mainCardId = data.cards.first().id
+                        if (cardId != mainCardId && data.cards.size > 1) {
+                            val remainingCards = data.cards.filterNot { it.id == cardId }
+                            val nextActiveId = if (data.activeCardId == cardId) mainCardId else data.activeCardId
+                            persist(
+                                data.copy(
+                                    cards = remainingCards,
+                                    activeCardId = nextActiveId,
+                                    purchases = data.purchases.filterNot { it.cardId == cardId }
+                                )
+                            )
+                        }
+                    },
+                    onCategoriesChanged = { categories -> persist(data.copy(categories = categories)) }
+'''
+          if old not in text:
+              raise SystemExit('settings callback block not found')
+          text = text.replace(old, new, 1)
+
+          # Add compact card-picker state to Home.
+          old = '''    var showCategories by remember { mutableStateOf(false) }
+    var isInstallment by remember { mutableStateOf(false) }
+'''
+          new = '''    var showCategories by remember { mutableStateOf(false) }
+    var showCardPicker by remember { mutableStateOf(false) }
+    var isInstallment by remember { mutableStateOf(false) }
+'''
+          if old not in text:
+              raise SystemExit('home state block not found')
+          text = text.replace(old, new, 1)
+
+          # Replace the duplicated Home summaries and title with one adaptive summary.
+          start_marker = '''        item {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(24.dp),
+'''
+          end_marker = '''        item {
+            OutlinedTextField(
+                value = amount,
+'''
+          start = text.find(start_marker)
+          end = text.find(end_marker, start)
+          if start < 0 or end < 0:
+              raise SystemExit('home summary region not found')
+
+          adaptive = '''        if (data.cards.size > 1) {
+            item {
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(24.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primary)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(20.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("Total das faturas atuais", color = Color.White.copy(alpha = .78f))
+                            Text(
+                                formatModernMoney(allCardsTotal),
+                                style = MaterialTheme.typography.headlineLarge,
+                                fontWeight = FontWeight.Bold,
+                                color = Color.White
+                            )
+                        }
+                        TextButton(onClick = onAddCard, modifier = Modifier.size(42.dp)) {
+                            Text("+", color = Color.White, fontSize = 28.sp, fontWeight = FontWeight.Light)
+                        }
+                    }
+                }
+            }
+            item {
+                FilledTonalButton(
+                    onClick = { showCardPicker = true },
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(14.dp)
+                ) {
+                    Text(activeCard.name, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Text("Trocar", style = MaterialTheme.typography.labelLarge)
+                }
+            }
+        } else {
+            item {
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(24.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primary)
+                ) {
+                    Column(modifier = Modifier.padding(20.dp)) {
+                        Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(activeCard.name, color = Color.White.copy(alpha = .78f))
+                                Text(
+                                    formatModernMoney(cardTotal),
+                                    style = MaterialTheme.typography.headlineLarge,
+                                    fontWeight = FontWeight.Bold,
+                                    color = Color.White
+                                )
+                            }
+                            TextButton(onClick = onAddCard, modifier = Modifier.size(42.dp)) {
+                                Text("+", color = Color.White, fontSize = 28.sp, fontWeight = FontWeight.Light)
+                            }
+                        }
+                        Spacer(Modifier.height(12.dp))
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                            CompactInfoLight("Fecha", modernDayLabel(currentPeriod.end))
+                            CompactInfoLight("Vence", modernDayLabel(currentPeriod.dueDate))
+                            CompactInfoLight("Melhor compra", modernDayLabel(currentPeriod.end.plusDays(1)))
+                        }
+                    }
+                }
+            }
+        }
+
+'''
+          text = text[:start] + adaptive + text[end:]
+
+          # Compact white-on-green info helper used by the single-card summary.
+          helper_marker = '''@Composable
+private fun CompactInfo(title: String, value: String) {
+'''
+          helper = '''@Composable
+private fun CompactInfoLight(title: String, value: String) {
+    Column {
+        Text(title, style = MaterialTheme.typography.labelSmall, color = Color.White.copy(alpha = .70f))
+        Text(value, fontWeight = FontWeight.Bold, color = Color.White)
+    }
+}
+
+'''
+          if helper_marker not in text:
+              raise SystemExit('CompactInfo marker not found')
+          text = text.replace(helper_marker, helper + helper_marker, 1)
+
+          # Card picker dialog for multi-card purchase entry.
+          dialog_marker = '''    if (showCategories) {
+        AlertDialog(
+'''
+          picker = '''    if (showCardPicker) {
+        AlertDialog(
+            onDismissRequest = { showCardPicker = false },
+            title = { Text("Cartão da compra") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    data.cards.forEach { card ->
+                        TextButton(
+                            onClick = {
+                                onSelectCard(card.id)
+                                showCardPicker = false
+                            },
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text(card.name, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            if (card.id == activeCard.id) Text("✓", color = MaterialTheme.colorScheme.primary)
+                        }
+                    }
+                }
+            },
+            confirmButton = { TextButton(onClick = { showCardPicker = false }) { Text("Fechar") } }
+        )
+    }
+
+'''
+          if dialog_marker not in text:
+              raise SystemExit('category dialog marker not found')
+          text = text.replace(dialog_marker, picker + dialog_marker, 1)
+
+          # Settings function accepts delete callback and shows it only for secondary cards.
+          old = '''private fun ModernSettingsScreen(
+    data: ModernAppData,
+    onSelectCard: (String) -> Unit,
+    onSaveCard: (ModernCardProfile) -> Unit,
+    onCategoriesChanged: (List<String>) -> Unit
+) {
+'''
+          new = '''private fun ModernSettingsScreen(
+    data: ModernAppData,
+    onSelectCard: (String) -> Unit,
+    onSaveCard: (ModernCardProfile) -> Unit,
+    onDeleteCard: (String) -> Unit,
+    onCategoriesChanged: (List<String>) -> Unit
+) {
+'''
+          if old not in text:
+              raise SystemExit('settings signature not found')
+          text = text.replace(old, new, 1)
+
+          old = '''    var message by remember(card.id) { mutableStateOf<String?>(null) }
+    var newCategory by remember { mutableStateOf("") }
+    val current = modernInvoiceForPurchase(LocalDate.now(), card)
+'''
+          new = '''    var message by remember(card.id) { mutableStateOf<String?>(null) }
+    var newCategory by remember { mutableStateOf("") }
+    var confirmDeleteCard by remember(card.id) { mutableStateOf(false) }
+    val current = modernInvoiceForPurchase(LocalDate.now(), card)
+    val isMainCard = card.id == data.cards.first().id
+'''
+          if old not in text:
+              raise SystemExit('settings state block not found')
+          text = text.replace(old, new, 1)
+
+          save_marker = '''                    ) { Text("Salvar cartão", fontWeight = FontWeight.Bold) }
+                    message?.let { Text(it, color = MaterialTheme.colorScheme.primary) }
+'''
+          save_replacement = '''                    ) { Text("Salvar cartão", fontWeight = FontWeight.Bold) }
+                    if (!isMainCard && data.cards.size > 1) {
+                        OutlinedButton(
+                            onClick = { confirmDeleteCard = true },
+                            modifier = Modifier.fillMaxWidth().height(50.dp),
+                            shape = RoundedCornerShape(16.dp)
+                        ) {
+                            Text("Remover cartão", color = Color(0xFFB42318))
+                        }
+                    }
+                    message?.let { Text(it, color = MaterialTheme.colorScheme.primary) }
+'''
+          if save_marker not in text:
+              raise SystemExit('save button marker not found')
+          text = text.replace(save_marker, save_replacement, 1)
+
+          settings_end = '''        item { Spacer(Modifier.height(16.dp)) }
+    }
+}
+
+private fun normalizeModernData'''
+          settings_end_replacement = '''        item { Spacer(Modifier.height(16.dp)) }
+    }
+
+    if (confirmDeleteCard && !isMainCard) {
+        AlertDialog(
+            onDismissRequest = { confirmDeleteCard = false },
+            title = { Text("Remover ${card.name}?") },
+            text = { Text("O cartão e os lançamentos vinculados a ele serão removidos deste dispositivo. O cartão principal será mantido.") },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        confirmDeleteCard = false
+                        onDeleteCard(card.id)
+                    }
+                ) { Text("Remover", color = Color(0xFFB42318)) }
+            },
+            dismissButton = { TextButton(onClick = { confirmDeleteCard = false }) { Text("Cancelar") } }
+        )
+    }
+}
+
+private fun normalizeModernData'''
+          if settings_end not in text:
+              raise SystemExit('settings end marker not found')
+          text = text.replace(settings_end, settings_end_replacement, 1)
+
+          path.write_text(text)
+          PY
+
+      - name: Commit upgrade
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add app/src/main/java/com/carlos/appcartao/ModernCardActivity.kt
+          git commit -m "Clean Home and add safe card removal"
+          git push

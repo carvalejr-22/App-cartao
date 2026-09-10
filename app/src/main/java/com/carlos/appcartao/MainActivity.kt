@@ -110,7 +110,7 @@ import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
 import kotlin.math.max
 
-private const val DATA_VERSION = 2
+private const val DATA_VERSION = 3
 
 private val AppColors = lightColorScheme(
     primary = Color(0xFF135D54),
@@ -1154,9 +1154,31 @@ private fun buildInstallmentSeries(base: Purchase, count: Int, settings: CardSet
             invoiceDueEpochDay = null
         )
         result.add(assignToPeriod(installment, period))
-        period = invoiceForPurchase(period.end, settings)
+        period = nextInvoicePeriod(period, settings)
     }
     return result
+}
+
+private fun nextInvoicePeriod(period: InvoicePeriod, settings: CardSettings): InvoicePeriod {
+    val nextMonth = period.end.plusMonths(1)
+    val end = dateAtDay(nextMonth.year, nextMonth.monthValue, settings.closingDay)
+    val previousMonth = end.minusMonths(1)
+    val start = dateAtDay(previousMonth.year, previousMonth.monthValue, settings.closingDay)
+    val dueBase = if (settings.dueDay > settings.closingDay) end else end.plusMonths(1)
+    val dueDate = dateAtDay(dueBase.year, dueBase.monthValue, settings.dueDay)
+    return InvoicePeriod(start = start, end = end, dueDate = dueDate)
+}
+
+private fun installmentPeriod(
+    purchaseDate: LocalDate,
+    installmentNumber: Int,
+    settings: CardSettings
+): InvoicePeriod {
+    var period = invoiceForPurchase(purchaseDate, settings)
+    repeat((installmentNumber - 1).coerceAtLeast(0)) {
+        period = nextInvoicePeriod(period, settings)
+    }
+    return period
 }
 
 private fun purchasePeriod(purchase: Purchase, settings: CardSettings): InvoicePeriod {
@@ -1395,21 +1417,36 @@ class SecureStore(private val context: Context) {
                     installmentTotal = if (p.has("installmentTotal")) p.optInt("installmentTotal") else null
                 )
 
-                if (dataVersion < DATA_VERSION) {
-                    val closingDateInPurchaseMonth = dateAtDay(raw.purchaseDate.year, raw.purchaseDate.monthValue, settings.closingDay)
-                    if (raw.purchaseDate == closingDateInPurchaseMonth) {
-                        raw = raw.copy(
-                            invoiceStartEpochDay = null,
-                            invoiceEndEpochDay = null,
-                            invoiceDueEpochDay = null
-                        )
-                    } else if (raw.invoiceEndEpochDay != null) {
-                        val oldEnd = LocalDate.ofEpochDay(raw.invoiceEndEpochDay)
-                        val previousMonth = oldEnd.minusMonths(1)
-                        val correctedStart = dateAtDay(previousMonth.year, previousMonth.monthValue, settings.closingDay)
-                        raw = raw.copy(invoiceStartEpochDay = correctedStart.toEpochDay())
-                    }
-                }
+                if (dataVersion < 2) {
+            val closingDateInPurchaseMonth = dateAtDay(raw.purchaseDate.year, raw.purchaseDate.monthValue, settings.closingDay)
+            if (raw.purchaseDate == closingDateInPurchaseMonth) {
+                raw = raw.copy(
+                    invoiceStartEpochDay = null,
+                    invoiceEndEpochDay = null,
+                    invoiceDueEpochDay = null
+                )
+            } else if (raw.invoiceEndEpochDay != null) {
+                val oldEnd = LocalDate.ofEpochDay(raw.invoiceEndEpochDay)
+                val previousMonth = oldEnd.minusMonths(1)
+                val correctedStart = dateAtDay(previousMonth.year, previousMonth.monthValue, settings.closingDay)
+                raw = raw.copy(invoiceStartEpochDay = correctedStart.toEpochDay())
+            }
+        }
+
+        // v3 corrige parcelamentos históricos deslocados para a fatura errada.
+        // A parcela 1 sempre nasce na primeira fatura definida pela data real da compra.
+        if (dataVersion < 3 && raw.isInstallment) {
+            val number = raw.installmentNumber ?: 1
+            val correctedPeriod = installmentPeriod(raw.purchaseDate, number, settings)
+            raw = assignToPeriod(
+                raw.copy(
+                    invoiceStartEpochDay = null,
+                    invoiceEndEpochDay = null,
+                    invoiceDueEpochDay = null
+                ),
+                correctedPeriod
+            )
+        }
 
                 add(assignInvoice(raw, settings))
             }

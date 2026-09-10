@@ -1,0 +1,30 @@
+name: Upgrade App Cartao v0.6.0
+
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - ".github/workflows/upgrade-v060.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  upgrade:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Apply v0.6.0 upgrade
+        run: python3 .github/scripts/upgrade_v060.py
+
+      - name: Commit upgrade
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add app/src/main/java/com/carlos/appcartao/ModernCardActivity.kt
+          git commit -m "Add editing categories and Google Drive backup"
+          git push

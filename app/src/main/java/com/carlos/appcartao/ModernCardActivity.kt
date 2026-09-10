@@ -12,6 +12,7 @@ import androidx.activity.result.IntentSenderRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -36,8 +37,11 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.DeleteOutline
+import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material3.HorizontalDivider
-import androidx.compose.material3.IconButton
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
@@ -830,15 +834,36 @@ private fun ModernInvoiceScreen(
                             }
                             Text("Compra em ${formatModernDate(purchase.purchaseDate)}", style = MaterialTheme.typography.labelSmall, color = Color(0xFF98A2B3))
                         }
-                        Column(horizontalAlignment = Alignment.End) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(2.dp)
+                        ) {
                             Text(formatModernMoney(purchase.amountCents), fontWeight = FontWeight.Bold)
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                IconButton(onClick = { pendingEdit = purchase }) {
-                                    Text("✎", fontSize = 21.sp, color = MaterialTheme.colorScheme.secondary)
-                                }
-                                IconButton(onClick = { pendingDelete = purchase }) {
-                                    Text("🗑", fontSize = 19.sp, color = Color(0xFFB42318))
-                                }
+                            Box(
+                                modifier = Modifier
+                                    .size(30.dp)
+                                    .clickable { pendingEdit = purchase },
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Outlined.Edit,
+                                    contentDescription = "Editar valor",
+                                    tint = Color(0xFF667085),
+                                    modifier = Modifier.size(16.dp)
+                                )
+                            }
+                            Box(
+                                modifier = Modifier
+                                    .size(30.dp)
+                                    .clickable { pendingDelete = purchase },
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Outlined.DeleteOutline,
+                                    contentDescription = "Excluir compra",
+                                    tint = Color(0xFFB42318),
+                                    modifier = Modifier.size(16.dp)
+                                )
                             }
                         }
                     }
@@ -1442,11 +1467,21 @@ private fun ModernSettingsScreen(
                             Spacer(Modifier.width(10.dp))
                             Text(category, modifier = Modifier.weight(1f))
                             if (category != "Outros") {
-                                IconButton(onClick = {
-                                    val updated = data.categories.filterNot { it == category }
-                                    onCategoriesChanged(if (updated.isEmpty()) listOf("Outros") else updated)
-                                }) {
-                                    Text("🗑", fontSize = 18.sp, color = Color(0xFFB42318))
+                                Box(
+                                    modifier = Modifier
+                                        .size(30.dp)
+                                        .clickable {
+                                            val updated = data.categories.filterNot { it == category }
+                                            onCategoriesChanged(if (updated.isEmpty()) listOf("Outros") else updated)
+                                        },
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Outlined.DeleteOutline,
+                                        contentDescription = "Excluir categoria",
+                                        tint = Color(0xFFB42318),
+                                        modifier = Modifier.size(16.dp)
+                                    )
                                 }
                             }
                         }

@@ -34,16 +34,13 @@ jobs:
           packages: "platform-tools platforms;android-36 build-tools;36.0.0"
           log-accepted-android-sdk-licenses: false
 
-      - name: Apply Compose compatibility fix
-        run: sed -i '/import androidx.compose.foundation.layout.weight/d' app/src/main/java/com/carlos/appcartao/MainActivity.kt
-
       - name: Build debug APK
         run: gradle --no-daemon :app:assembleDebug
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: App-cartao-v0.3.0
+          name: App-cartao-v0.4.0
           path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
           retention-days: 30

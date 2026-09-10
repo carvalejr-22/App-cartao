@@ -3,10 +3,13 @@
     <application
         android:allowBackup="false"
         android:fullBackupContent="false"
+        android:appCategory="finance"
+        android:hasFragileUserData="true"
         android:icon="@drawable/ic_launcher"
         android:roundIcon="@drawable/ic_launcher"
         android:label="Meu Cartão"
         android:supportsRtl="true"
+        android:usesCleartextTraffic="false"
         android:theme="@android:style/Theme.Material.Light.NoActionBar">
         <activity
             android:name=".ModernCardActivity"

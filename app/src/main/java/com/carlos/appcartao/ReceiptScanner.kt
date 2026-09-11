@@ -1,10 +1,13 @@
 package com.carlos.appcartao
 
-import android.content.Context
-import android.net.Uri
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.graphics.Matrix
+import androidx.exifinterface.media.ExifInterface
 import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.text.TextRecognition
 import com.google.mlkit.vision.text.latin.TextRecognizerOptions
+import java.io.File
 import java.math.BigDecimal
 import java.math.RoundingMode
 import java.text.Normalizer
@@ -18,33 +21,74 @@ internal data class ReceiptScanResult(
     val rawText: String
 )
 
-internal class ReceiptOcrScanner(private val context: Context) {
+internal class ReceiptOcrScanner {
     fun scan(
-        uri: Uri,
+        file: File,
         categories: List<String>,
         callback: (ReceiptScanResult?, String?) -> Unit
     ) {
-        val image = try {
-            InputImage.fromFilePath(context, uri)
-        } catch (_: Exception) {
-            callback(null, "Não foi possível abrir a foto do comprovante.")
+        if (!file.exists() || file.length() <= 0L) {
+            callback(null, "A câmera não gravou a foto corretamente. Tente novamente.")
             return
         }
+
+        val bitmap = runCatching { decodeReceiptBitmap(file) }.getOrNull()
+        if (bitmap == null) {
+            callback(null, "Não foi possível abrir a foto do comprovante. Tente novamente.")
+            return
+        }
+
+        val image = InputImage.fromBitmap(bitmap, 0)
         val recognizer = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
         recognizer.process(image)
             .addOnSuccessListener { recognized ->
                 val result = ReceiptParser.parse(recognized.text, categories)
                 recognizer.close()
+                bitmap.recycle()
                 if (recognized.text.isBlank()) {
-                    callback(null, "Não encontrei texto legível. Tente aproximar a câmera e evitar reflexos.")
+                    callback(null, "Não encontrei texto legível. Aproxime a câmera, enquadre o comprovante inteiro e evite reflexos.")
                 } else {
                     callback(result, null)
                 }
             }
             .addOnFailureListener {
                 recognizer.close()
+                bitmap.recycle()
                 callback(null, "Não consegui ler o comprovante. Tente uma foto mais nítida.")
             }
+    }
+
+    private fun decodeReceiptBitmap(file: File): Bitmap? {
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeFile(file.absolutePath, bounds)
+        if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
+
+        var sample = 1
+        val maxSide = maxOf(bounds.outWidth, bounds.outHeight)
+        while (maxSide / sample > 2600) sample *= 2
+
+        val options = BitmapFactory.Options().apply {
+            inSampleSize = sample
+            inPreferredConfig = Bitmap.Config.ARGB_8888
+        }
+        val decoded = BitmapFactory.decodeFile(file.absolutePath, options) ?: return null
+        val rotation = runCatching {
+            when (ExifInterface(file).getAttributeInt(
+                ExifInterface.TAG_ORIENTATION,
+                ExifInterface.ORIENTATION_NORMAL
+            )) {
+                ExifInterface.ORIENTATION_ROTATE_90 -> 90f
+                ExifInterface.ORIENTATION_ROTATE_180 -> 180f
+                ExifInterface.ORIENTATION_ROTATE_270 -> 270f
+                else -> 0f
+            }
+        }.getOrDefault(0f)
+
+        if (rotation == 0f) return decoded
+        val matrix = Matrix().apply { postRotate(rotation) }
+        val rotated = Bitmap.createBitmap(decoded, 0, 0, decoded.width, decoded.height, matrix, true)
+        if (rotated !== decoded) decoded.recycle()
+        return rotated
     }
 }
 
@@ -73,11 +117,9 @@ internal object ReceiptParser {
                 val cents = parseAmount(match.groupValues[1]) ?: return@forEach
                 if (cents <= 0 || cents > 1_000_000_000L) return@forEach
                 var score = 0
-                if (listOf("total a pagar", "valor total", "total geral").any { line.contains(it) }) score += 1700
-                else if (line.contains("total pago")) score += 1500
-                else if (line.contains("valor pago")) score += 1200
+                if (listOf("total a pagar", "valor a pagar", "valor total", "total geral", "valor pago", "total pago", "valor do pagamento").any { line.contains(it) }) score += 1700
                 else if (Regex("\\btotal\\b").containsMatchIn(line)) score += 1100
-                else if (listOf("a pagar", "valor da compra", "valor compra", "pago").any { line.contains(it) }) score += 700
+                else if (listOf("a pagar", "valor da compra", "valor compra", "pago", "pagamento").any { line.contains(it) }) score += 700
                 if (line.contains("subtotal")) score -= 500
                 if (line.contains("troco")) score -= 900
                 if (line.contains("desconto")) score -= 700
@@ -117,7 +159,7 @@ internal object ReceiptParser {
                 val date = runCatching { LocalDate.of(year, month, day) }.getOrNull() ?: return@forEach
                 if (date.year !in 2000..today.year + 1) return@forEach
                 var score = 0
-                if (listOf("data", "emissao", "emitido", "compra", "transacao", "cupom").any { normalized.contains(it) }) score += 300
+                if (listOf("data", "emissao", "emitido", "compra", "transacao", "cupom", "autorizacao").any { normalized.contains(it) }) score += 300
                 if (listOf("validade", "vencimento").any { normalized.contains(it) }) score -= 300
                 score -= index.coerceAtMost(100)
                 candidates += DateCandidate(date, score, index)
@@ -151,7 +193,7 @@ internal object ReceiptParser {
             has("supermercado", "mercado", "hipermercado", "atacadao", "atacadão", "hortifruti", "mercearia") -> "Mercado"
             has("padaria", "panificadora", "confeitaria") -> "Padaria"
             has("posto", "gasolina", "etanol", "diesel", "combustivel", "combustível") -> "Posto de gasolina"
-            has("farmacia", "farmácia", "drogaria", "medicamento") -> "Farmácia"
+            has("farmacia", "farmácia", "drogaria", "drogam", "medicamento", "medicamentos") -> "Farmácia"
             has("hospital", "clinica", "clínica", "laboratorio", "laboratório", "consulta medica", "consulta médica") -> "Saúde"
             has("estacionamento", "parking") -> "Estacionamento"
             has("uber", "99app", "taxi", "táxi", "rodoviaria", "rodoviária", "passagem urbana") -> "Transporte"

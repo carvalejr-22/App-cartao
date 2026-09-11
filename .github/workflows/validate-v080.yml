@@ -1,0 +1,49 @@
+name: Validate App Cartao v0.8.0
+
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - ".github/workflows/validate-v080.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up JDK 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+      - name: Set up Gradle 9.6
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "9.6.0"
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v4
+        with:
+          packages: "platform-tools platforms;android-36 build-tools;36.0.0"
+          log-accepted-android-sdk-licenses: false
+      - name: Run unit tests
+        run: gradle --no-daemon :app:testDebugUnitTest
+      - name: Build debug and unsigned release APKs
+        run: gradle --no-daemon :app:assembleDebug :app:assembleRelease
+      - name: Prepare signing tool
+        run: cp "$ANDROID_HOME/build-tools/36.0.0/lib/apksigner.jar" app/build/outputs/apk/release/apksigner.jar
+      - name: Upload validated package
+        uses: actions/upload-artifact@v4
+        with:
+          name: Meu-Cartao-v0.8.0-validated
+          path: |
+            app/build/outputs/apk/debug/app-debug.apk
+            app/build/outputs/apk/release/app-release-unsigned.apk
+            app/build/outputs/apk/release/apksigner.jar
+          if-no-files-found: error
+          retention-days: 30

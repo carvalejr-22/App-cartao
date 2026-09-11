@@ -94,9 +94,6 @@ object AutomaticBackupScheduler {
             request
         )
     }
-
-    fun isSystemBackupEnabled(context: Context): Boolean =
-        runCatching { BackupManager(context.applicationContext).isBackupEnabled }.getOrDefault(false)
 }
 
 class AndroidBackupRequestWorker(

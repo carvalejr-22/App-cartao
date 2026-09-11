@@ -197,7 +197,7 @@ internal object ReceiptParser {
             has("supermercado", "mercado", "hipermercado", "atacadao", "atacadão", "hortifruti", "mercearia") -> "Mercado"
             has("padaria", "panificadora", "confeitaria") -> "Padaria"
             has("posto", "gasolina", "etanol", "diesel", "combustivel", "combustível") -> "Posto de gasolina"
-            has("farmacia", "farmácia", "drogaria", "medicamento", "albendazol", "enterogermina") -> "Farmácia"
+            has("farmacia", "farmácia", "drogaria", "drogam", "ultrapopular", "medicamento", "albendazol", "enterogermina") -> "Farmácia"
             has("hospital", "clinica", "clínica", "laboratorio", "laboratório", "consulta medica", "consulta médica") -> "Saúde"
             has("estacionamento", "parking") -> "Estacionamento"
             has("uber", "99app", "taxi", "táxi", "rodoviaria", "rodoviária", "passagem urbana") -> "Transporte"

@@ -1,0 +1,7 @@
+from pathlib import Path
+p = Path('app/src/main/java/com/carlos/appcartao/ModernCardActivity.kt')
+s = p.read_text()
+s = s.replace('''    val systemBackupEnabled = remember(data.lastModifiedMillis) { AutomaticBackupScheduler.isSystemBackupEnabled(backupContext) }\n    val backupStatusText = when {\n        !systemBackupEnabled ->\n            "O backup do Android está desativado neste aparelho. Ative o backup do sistema para permitir restauração após reinstalação."\n        backupStatus.lastRestoreMillis > 0L && backupStatus.lastRestoreMillis >= backupStatus.lastCompletedMillis ->''', '''    val backupStatusText = when {\n        backupStatus.lastRestoreMillis > 0L && backupStatus.lastRestoreMillis >= backupStatus.lastCompletedMillis ->''')
+s = s.replace('''                            Text(\n                                if (systemBackupEnabled) "✓ Proteção automática ativa" else "⚠ Backup do Android desativado",\n                                fontWeight = FontWeight.SemiBold,\n                                color = if (systemBackupEnabled) MaterialTheme.colorScheme.primary else Color(0xFFB54708)\n                            )''', '''                            Text(\n                                "✓ Proteção automática configurada",\n                                fontWeight = FontWeight.SemiBold,\n                                color = MaterialTheme.colorScheme.primary\n                            )''')
+p.write_text(s)
+print('Fixed backup status API compatibility')

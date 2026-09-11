@@ -117,7 +117,9 @@ internal object ReceiptParser {
                 val cents = parseAmount(match.groupValues[1]) ?: return@forEach
                 if (cents <= 0 || cents > 1_000_000_000L) return@forEach
                 var score = 0
-                if (listOf("total a pagar", "valor a pagar", "valor total", "total geral", "valor pago", "total pago", "valor do pagamento").any { line.contains(it) }) score += 1700
+                if (listOf("total a pagar", "valor a pagar", "valor total", "total geral").any { line.contains(it) }) score += 1800
+                else if (line.contains("total pago")) score += 1500
+                else if (listOf("valor pago", "valor do pagamento").any { line.contains(it) }) score += 1300
                 else if (Regex("\\btotal\\b").containsMatchIn(line)) score += 1100
                 else if (listOf("a pagar", "valor da compra", "valor compra", "pago", "pagamento").any { line.contains(it) }) score += 700
                 if (line.contains("subtotal")) score -= 500

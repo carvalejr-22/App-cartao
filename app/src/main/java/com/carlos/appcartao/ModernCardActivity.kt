@@ -179,7 +179,8 @@ class ModernCardActivity : ComponentActivity() {
         registerForActivityResult(ActivityResultContracts.TakePicture()) { captured ->
             val callback = pendingReceiptCallback
             val uri = pendingReceiptUri
-            if (callback == null || uri == null) {
+            val file = pendingReceiptFile
+            if (callback == null || uri == null || file == null) {
                 clearReceiptCapture()
                 return@registerForActivityResult
             }
@@ -189,7 +190,7 @@ class ModernCardActivity : ComponentActivity() {
                 return@registerForActivityResult
             }
 
-            ReceiptOcrScanner(this).scan(uri, pendingReceiptCategories) { result, error ->
+            ReceiptOcrScanner().scan(file, pendingReceiptCategories) { result, error ->
                 runOnUiThread {
                     callback(result, error)
                     clearReceiptCapture()
@@ -1397,6 +1398,20 @@ private fun ModernSettingsScreen(
     var confirmDeleteCard by remember(card.id) { mutableStateOf(false) }
     val current = modernInvoiceForPurchase(LocalDate.now(), card)
     val isMainCard = card.id == data.cards.first().id
+    val backupContext = androidx.compose.ui.platform.LocalContext.current.applicationContext
+    val backupStatus = remember(data.lastModifiedMillis) { AutomaticBackupStatusStore.read(backupContext) }
+    val backupStatusText = when {
+        backupStatus.lastRestoreMillis > 0L && backupStatus.lastRestoreMillis >= backupStatus.lastCompletedMillis ->
+            "Dados restaurados do backup em ${formatAutomaticBackupMoment(backupStatus.lastRestoreMillis)}."
+        backupStatus.pending && backupStatus.lastRequestMillis >= backupStatus.lastChangeMillis && backupStatus.lastRequestMillis > 0L ->
+            "Alteração salva. Pedido enviado ao Android; aguardando a conclusão do backup."
+        backupStatus.pending ->
+            "Alteração salva no aparelho. Backup aguardando conexão com a internet."
+        backupStatus.lastCompletedMillis > 0L ->
+            "Último backup confirmado pelo Android: ${formatAutomaticBackupMoment(backupStatus.lastCompletedMillis)}."
+        else ->
+            "Ainda não há backup confirmado neste aparelho. Faça uma alteração e mantenha o celular conectado à internet."
+    }
 
     LazyColumn(modifier = Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         item { Spacer(Modifier.height(6.dp)) }
@@ -1544,8 +1559,14 @@ private fun ModernSettingsScreen(
                         Column(modifier = Modifier.fillMaxWidth().padding(12.dp)) {
                             Text("✓ Proteção automática", fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.primary)
                             Text(
-                                "Se estiver offline, o pedido de backup aguarda a conexão. O Android faz o envio em segundo plano no momento permitido pelo sistema.",
+                                backupStatusText,
                                 style = MaterialTheme.typography.bodySmall,
+                                color = Color(0xFF667085)
+                            )
+                            Spacer(Modifier.height(4.dp))
+                            Text(
+                                "O Android decide o instante exato do envio. Só desinstale para testar quando aparecer ‘Último backup confirmado’.",
+                                style = MaterialTheme.typography.labelSmall,
                                 color = Color(0xFF667085)
                             )
                         }
@@ -1746,6 +1767,9 @@ private fun modernCategorySymbol(category: String): String = when (category) {
     "Viagem" -> "✈"
     else -> "•"
 }
+
+private fun formatAutomaticBackupMoment(millis: Long): String =
+    java.text.SimpleDateFormat("dd/MM/yyyy HH:mm", Locale("pt", "BR")).format(java.util.Date(millis))
 
 private fun formatModernDate(date: LocalDate): String = date.format(modernFullDateFormatter)
 private fun modernDayLabel(date: LocalDate): String = date.format(modernDayMonthFormatter)

@@ -215,6 +215,12 @@ class ModernCardActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // Remove abandoned temporary receipt photos from interrupted camera sessions.
+        runCatching {
+            File(cacheDir, "receipts").listFiles()?.forEach { file ->
+                if (System.currentTimeMillis() - file.lastModified() > 60L * 60L * 1000L) file.delete()
+            }
+        }
         store = ModernSecureStore(this)
         setContent {
             MaterialTheme(colorScheme = ModernColors) {
@@ -1456,17 +1462,20 @@ private fun ModernSettingsScreen(
     val isMainCard = card.id == data.cards.first().id
     val backupContext = androidx.compose.ui.platform.LocalContext.current.applicationContext
     val backupStatus = remember(data.lastModifiedMillis) { AutomaticBackupStatusStore.read(backupContext) }
+    val systemBackupEnabled = remember(data.lastModifiedMillis) { AutomaticBackupScheduler.isSystemBackupEnabled(backupContext) }
     val backupStatusText = when {
+        !systemBackupEnabled ->
+            "O backup do Android está desativado neste aparelho. Ative o backup do sistema para permitir restauração após reinstalação."
         backupStatus.lastRestoreMillis > 0L && backupStatus.lastRestoreMillis >= backupStatus.lastCompletedMillis ->
-            "Dados restaurados do backup em ${formatAutomaticBackupMoment(backupStatus.lastRestoreMillis)}."
+            "Dados restaurados pelo Android em ${formatAutomaticBackupMoment(backupStatus.lastRestoreMillis)}."
         backupStatus.pending && backupStatus.lastRequestMillis >= backupStatus.lastChangeMillis && backupStatus.lastRequestMillis > 0L ->
-            "Alteração salva. Pedido enviado ao Android; aguardando a conclusão do backup."
+            "Alteração salva. Pedido de backup entregue ao Android; o sistema concluirá o envio em segundo plano."
         backupStatus.pending ->
-            "Alteração salva no aparelho. Backup aguardando conexão com a internet."
+            "Alteração salva no aparelho. O pedido de backup está aguardando conexão com a internet."
         backupStatus.lastCompletedMillis > 0L ->
-            "Último backup confirmado pelo Android: ${formatAutomaticBackupMoment(backupStatus.lastCompletedMillis)}."
+            "Dados entregues ao serviço de backup do Android em ${formatAutomaticBackupMoment(backupStatus.lastCompletedMillis)}."
         else ->
-            "Ainda não há backup confirmado neste aparelho. Faça uma alteração e mantenha o celular conectado à internet."
+            "Ainda não houve uma execução de backup registrada neste aparelho."
     }
 
     LazyColumn(modifier = Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -1613,7 +1622,11 @@ private fun ModernSettingsScreen(
                         shape = RoundedCornerShape(14.dp)
                     ) {
                         Column(modifier = Modifier.fillMaxWidth().padding(12.dp)) {
-                            Text("✓ Proteção automática", fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.primary)
+                            Text(
+                                if (systemBackupEnabled) "✓ Proteção automática ativa" else "⚠ Backup do Android desativado",
+                                fontWeight = FontWeight.SemiBold,
+                                color = if (systemBackupEnabled) MaterialTheme.colorScheme.primary else Color(0xFFB54708)
+                            )
                             Text(
                                 backupStatusText,
                                 style = MaterialTheme.typography.bodySmall,
@@ -1621,7 +1634,7 @@ private fun ModernSettingsScreen(
                             )
                             Spacer(Modifier.height(4.dp))
                             Text(
-                                "O Android decide o instante exato do envio. Só desinstale para testar quando aparecer ‘Último backup confirmado’.",
+                                "O app agrupa alterações por alguns segundos para economizar bateria e dados. O Android decide o instante exato da cópia remota.",
                                 style = MaterialTheme.typography.labelSmall,
                                 color = Color(0xFF667085)
                             )
@@ -1645,7 +1658,7 @@ private fun ModernSettingsScreen(
                     Text("Leve e privado", fontWeight = FontWeight.Bold)
                     Spacer(Modifier.height(6.dp))
                     Text("• Funciona offline; alterações são salvas localmente na hora.")
-                    Text("• O pedido de backup automático só é enviado quando houver conexão.")
+                    Text("• Alterações próximas são agrupadas em um único pedido de backup para economizar bateria e internet.")
                     Text("• Dados criptografados com AES-GCM e chave no Android Keystore.")
                     Text("• Interface usa listas sob demanda para evitar carregar itens fora da tela.")
                     Text("• Evite salvar número do cartão, CVV ou senha nas descrições.")

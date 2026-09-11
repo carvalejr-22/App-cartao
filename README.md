@@ -2,10 +2,11 @@
 
 Aplicativo Android offline-first para controle de compras e faturas de cartão de crédito.
 
-## Recursos atuais — v0.7.0
+## Recursos atuais — v0.8.0
 
 - Registro rápido de valor, data, categoria e descrição opcional.
 - Compras à vista e parceladas, com cada parcela posicionada na fatura correta.
+- Recorrências mensais com lançamentos futuros, exclusão isolada e cancelamento dos próximos meses.
 - Faturas separadas por cartão e histórico preservado por mês.
 - Edição do valor de um lançamento diretamente na fatura.
 - Ações de edição e exclusão ainda mais compactas na mesma linha do valor, com lápis discreto e lixeira vermelha vetorial.

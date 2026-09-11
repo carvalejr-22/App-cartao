@@ -1,0 +1,26 @@
+name: Upgrade App Cartao v0.8.0
+
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - ".github/workflows/upgrade-v080.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  upgrade:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Apply v0.8.0 upgrade
+        run: python3 .github/scripts/upgrade_v080.py
+      - name: Commit upgrade
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add app/build.gradle.kts app/src/main/java/com/carlos/appcartao/ModernCardActivity.kt
+          git diff --cached --quiet || git commit -m "Add recurring purchase scheduling"
+          git push

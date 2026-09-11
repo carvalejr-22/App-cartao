@@ -267,10 +267,10 @@ private fun ModernCreditCardApp(
     var data by remember {
         val loaded = store.read()
         val prepared = modernEnsureRecurringSchedule(loaded)
-        if (prepared != loaded) {
-            store.write(prepared.copy(lastModifiedMillis = System.currentTimeMillis()))
-        }
-        mutableStateOf(prepared)
+        val ready = if (prepared != loaded) {
+            prepared.copy(lastModifiedMillis = System.currentTimeMillis()).also(store::write)
+        } else prepared
+        mutableStateOf(ready)
     }
     var screen by remember { mutableStateOf(ModernScreen.HOME) }
     val appContext = androidx.compose.ui.platform.LocalContext.current.applicationContext
@@ -1736,7 +1736,7 @@ private fun modernBuildInstallmentSeries(base: ModernPurchase, count: Int, card:
     return result
 }
 
-private fun modernAddRecurringSeries(
+internal fun modernAddRecurringSeries(
     data: ModernAppData,
     base: ModernPurchase,
     card: ModernCardProfile
@@ -1788,7 +1788,7 @@ private fun modernMigrateLegacyRecurring(data: ModernAppData): ModernAppData {
     return data.copy(purchases = purchases, recurringRules = rules)
 }
 
-private fun modernEnsureRecurringSchedule(input: ModernAppData): ModernAppData {
+internal fun modernEnsureRecurringSchedule(input: ModernAppData): ModernAppData {
     val data = modernMigrateLegacyRecurring(input)
     if (data.recurringRules.none { it.active }) return data
     val cardById = data.cards.associateBy { it.id }
@@ -1829,7 +1829,7 @@ private fun modernEnsureRecurringSchedule(input: ModernAppData): ModernAppData {
     return if (purchases == data.purchases) data else data.copy(purchases = purchases)
 }
 
-private fun modernSkipRecurringOccurrence(data: ModernAppData, purchase: ModernPurchase): ModernAppData {
+internal fun modernSkipRecurringOccurrence(data: ModernAppData, purchase: ModernPurchase): ModernAppData {
     val ruleId = purchase.recurringRuleId ?: return data.copy(
         purchases = data.purchases.filterNot { it.id == purchase.id }
     )
@@ -1843,7 +1843,7 @@ private fun modernSkipRecurringOccurrence(data: ModernAppData, purchase: ModernP
     )
 }
 
-private fun modernCancelRecurringFrom(data: ModernAppData, purchase: ModernPurchase): ModernAppData {
+internal fun modernCancelRecurringFrom(data: ModernAppData, purchase: ModernPurchase): ModernAppData {
     val ruleId = purchase.recurringRuleId ?: return data.copy(
         purchases = data.purchases.filterNot { it.id == purchase.id }
     )

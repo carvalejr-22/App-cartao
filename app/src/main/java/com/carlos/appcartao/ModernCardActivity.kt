@@ -89,7 +89,7 @@ import javax.crypto.spec.GCMParameterSpec
 import androidx.core.content.FileProvider
 import kotlin.math.max
 
-private const val MODERN_DATA_VERSION = 7
+private const val MODERN_DATA_VERSION = 8
 private const val LEGACY_CARD_ID = "legacy-card-1"
 
 private val ModernColors = lightColorScheme(
@@ -146,16 +146,31 @@ data class ModernPurchase(
     val installmentGroupId: String? = null,
     val installmentNumber: Int? = null,
     val installmentTotal: Int? = null,
-    val isRecurring: Boolean = false
+    val isRecurring: Boolean = false,
+    val recurringRuleId: String? = null
 ) {
     val isInstallment: Boolean
         get() = installmentGroupId != null && installmentNumber != null && installmentTotal != null && installmentTotal > 1
 }
 
+data class ModernRecurringRule(
+    val id: String = UUID.randomUUID().toString(),
+    val cardId: String,
+    val amountCents: Long,
+    val startEpochDay: Long,
+    val dayOfMonth: Int,
+    val category: String,
+    val note: String = "",
+    val active: Boolean = true,
+    val skippedEpochDays: List<Long> = emptyList(),
+    val createdAtMillis: Long = System.currentTimeMillis()
+)
+
 data class ModernAppData(
     val cards: List<ModernCardProfile> = listOf(ModernCardProfile(id = LEGACY_CARD_ID, name = "Cartão 1")),
     val activeCardId: String = LEGACY_CARD_ID,
     val purchases: List<ModernPurchase> = emptyList(),
+    val recurringRules: List<ModernRecurringRule> = emptyList(),
     val categories: List<String> = modernDefaultCategories,
     val lastModifiedMillis: Long = 0L
 )
@@ -243,12 +258,20 @@ private fun ModernCreditCardApp(
     store: ModernSecureStore,
     onScanReceipt: (List<String>, (ReceiptScanResult?, String?) -> Unit) -> Unit
 ) {
-    var data by remember { mutableStateOf(store.read()) }
+    var data by remember {
+        val loaded = store.read()
+        val prepared = modernEnsureRecurringSchedule(loaded)
+        if (prepared != loaded) {
+            store.write(prepared.copy(lastModifiedMillis = System.currentTimeMillis()))
+        }
+        mutableStateOf(prepared)
+    }
     var screen by remember { mutableStateOf(ModernScreen.HOME) }
     val appContext = androidx.compose.ui.platform.LocalContext.current.applicationContext
 
     fun persist(newData: ModernAppData) {
-        val normalized = normalizeModernData(newData).copy(lastModifiedMillis = System.currentTimeMillis())
+        val normalized = modernEnsureRecurringSchedule(normalizeModernData(newData))
+            .copy(lastModifiedMillis = System.currentTimeMillis())
         store.write(normalized)
         data = normalized
         AutomaticBackupScheduler.schedule(appContext)
@@ -318,13 +341,31 @@ private fun ModernCreditCardApp(
                     onSelectCard = ::selectCard,
                     onAddCard = ::addCard,
                     onScanReceipt = onScanReceipt,
-                    onAddPurchases = { purchases -> persist(data.copy(purchases = data.purchases + purchases)) }
+                    onSaveEntry = { base, count, recurring ->
+                        val targetCard = data.cards.firstOrNull { it.id == base.cardId } ?: data.cards.first()
+                        val updated = when {
+                            count > 1 -> data.copy(
+                                purchases = data.purchases + modernBuildInstallmentSeries(base, count, targetCard)
+                            )
+                            recurring -> modernAddRecurringSeries(data, base, targetCard)
+                            else -> data.copy(purchases = data.purchases + modernAssignInvoice(base, targetCard))
+                        }
+                        persist(updated)
+                    }
                 )
 
                 ModernScreen.INVOICE -> ModernInvoiceScreen(
                     data = data,
                     onSelectCard = ::selectCard,
-                    onDelete = { id -> persist(data.copy(purchases = data.purchases.filterNot { it.id == id })) },
+                    onDelete = { purchase ->
+                        val updated = if (purchase.recurringRuleId != null) {
+                            modernSkipRecurringOccurrence(data, purchase)
+                        } else {
+                            data.copy(purchases = data.purchases.filterNot { it.id == purchase.id })
+                        }
+                        persist(updated)
+                    },
+                    onCancelRecurring = { purchase -> persist(modernCancelRecurringFrom(data, purchase)) },
                     onEditAmount = { id, newAmount ->
                         persist(
                             data.copy(
@@ -353,7 +394,8 @@ private fun ModernCreditCardApp(
                                 data.copy(
                                     cards = remainingCards,
                                     activeCardId = nextActiveId,
-                                    purchases = data.purchases.filterNot { it.cardId == cardId }
+                                    purchases = data.purchases.filterNot { it.cardId == cardId },
+                                    recurringRules = data.recurringRules.filterNot { it.cardId == cardId }
                                 )
                             )
                         }
@@ -371,7 +413,7 @@ private fun ModernHomeScreen(
     onSelectCard: (String) -> Unit,
     onAddCard: () -> Unit,
     onScanReceipt: (List<String>, (ReceiptScanResult?, String?) -> Unit) -> Unit,
-    onAddPurchases: (List<ModernPurchase>) -> Unit
+    onSaveEntry: (ModernPurchase, Int, Boolean) -> Unit
 ) {
     val today = LocalDate.now()
     val activeCard = data.cards.firstOrNull { it.id == data.activeCardId } ?: data.cards.first()
@@ -607,7 +649,7 @@ private fun ModernHomeScreen(
                     Column(modifier = Modifier.weight(1f)) {
                         Text("Compra recorrente", fontWeight = FontWeight.SemiBold)
                         Text(
-                            "Marque para identificar cobranças que se repetem. Não cria lançamentos futuros sozinho.",
+                            "Lança a cobrança mensalmente nas próximas faturas. Você pode cancelar a recorrência quando quiser.",
                             style = MaterialTheme.typography.bodySmall,
                             color = Color(0xFF667085)
                         )
@@ -660,12 +702,7 @@ private fun ModernHomeScreen(
                                 isRecurring = isRecurring
                             )
                             val count = parcels ?: 1
-                            val purchases = if (count == 1) {
-                                listOf(modernAssignInvoice(base, activeCard))
-                            } else {
-                                modernBuildInstallmentSeries(base, count, activeCard)
-                            }
-                            onAddPurchases(purchases)
+                            onSaveEntry(base, count, isRecurring)
                             amount = ""
                             note = ""
                             date = LocalDate.now()
@@ -782,7 +819,8 @@ private fun CardSelector(
 private fun ModernInvoiceScreen(
     data: ModernAppData,
     onSelectCard: (String) -> Unit,
-    onDelete: (String) -> Unit,
+    onDelete: (ModernPurchase) -> Unit,
+    onCancelRecurring: (ModernPurchase) -> Unit,
     onEditAmount: (String, Long) -> Unit
 ) {
     val card = data.cards.firstOrNull { it.id == data.activeCardId } ?: data.cards.first()
@@ -943,6 +981,12 @@ private fun ModernInvoiceScreen(
                             style = MaterialTheme.typography.bodySmall,
                             color = Color(0xFF667085)
                         )
+                    } else if (purchase.recurringRuleId != null) {
+                        Text(
+                            "A alteração vale somente para este mês. As próximas cobranças mantêm o valor da recorrência.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = Color(0xFF667085)
+                        )
                     }
                 }
             },
@@ -964,22 +1008,34 @@ private fun ModernInvoiceScreen(
     }
 
     pendingDelete?.let { purchase ->
+        val activeRecurring = purchase.recurringRuleId?.let { ruleId ->
+            data.recurringRules.any { it.id == ruleId && it.active }
+        } == true
         AlertDialog(
             onDismissRequest = { pendingDelete = null },
-            title = { Text(if (purchase.isInstallment) "Excluir esta parcela?" else "Excluir compra?") },
+            title = { Text(if (activeRecurring) "Compra recorrente" else if (purchase.isInstallment) "Excluir esta parcela?" else "Excluir compra?") },
             text = {
                 Text(
-                    if (purchase.isInstallment) {
-                        "Será excluída apenas a parcela ${purchase.installmentNumber}/${purchase.installmentTotal}."
-                    } else {
-                        "${purchase.note.ifBlank { purchase.category }} — ${formatModernMoney(purchase.amountCents)}"
+                    when {
+                        activeRecurring -> "Você pode excluir somente este lançamento ou cancelar a recorrência. Ao cancelar, este e os lançamentos futuros desta cobrança serão removidos; o histórico anterior permanece."
+                        purchase.isInstallment -> "Será excluída apenas a parcela ${purchase.installmentNumber}/${purchase.installmentTotal}."
+                        else -> "${purchase.note.ifBlank { purchase.category }} — ${formatModernMoney(purchase.amountCents)}"
                     }
                 )
             },
             confirmButton = {
-                TextButton(onClick = { onDelete(purchase.id); pendingDelete = null }) { Text("Excluir", color = Color(0xFFB42318)) }
+                Column(horizontalAlignment = Alignment.End) {
+                    TextButton(onClick = { onDelete(purchase); pendingDelete = null }) {
+                        Text(if (activeRecurring) "Excluir somente este" else "Excluir", color = Color(0xFFB42318))
+                    }
+                    if (activeRecurring) {
+                        TextButton(onClick = { onCancelRecurring(purchase); pendingDelete = null }) {
+                            Text("Cancelar recorrência e futuros", color = Color(0xFFB42318))
+                        }
+                    }
+                }
             },
-            dismissButton = { TextButton(onClick = { pendingDelete = null }) { Text("Cancelar") } }
+            dismissButton = { TextButton(onClick = { pendingDelete = null }) { Text("Voltar") } }
         )
     }
 }
@@ -1667,6 +1723,128 @@ private fun modernBuildInstallmentSeries(base: ModernPurchase, count: Int, card:
     return result
 }
 
+private fun modernAddRecurringSeries(
+    data: ModernAppData,
+    base: ModernPurchase,
+    card: ModernCardProfile
+): ModernAppData {
+    val ruleId = UUID.randomUUID().toString()
+    val rule = ModernRecurringRule(
+        id = ruleId,
+        cardId = card.id,
+        amountCents = base.amountCents,
+        startEpochDay = base.purchaseDate.toEpochDay(),
+        dayOfMonth = base.purchaseDate.dayOfMonth,
+        category = base.category,
+        note = base.note,
+        createdAtMillis = base.createdAtMillis
+    )
+    val first = modernAssignInvoice(
+        base.copy(isRecurring = true, recurringRuleId = ruleId),
+        card
+    )
+    return modernEnsureRecurringSchedule(
+        data.copy(
+            purchases = data.purchases + first,
+            recurringRules = data.recurringRules + rule
+        )
+    )
+}
+
+private fun modernMigrateLegacyRecurring(data: ModernAppData): ModernAppData {
+    if (data.purchases.none { it.isRecurring && it.recurringRuleId == null }) return data
+    val rules = data.recurringRules.toMutableList()
+    val purchases = data.purchases.map { purchase ->
+        if (!purchase.isRecurring || purchase.recurringRuleId != null) {
+            purchase
+        } else {
+            val ruleId = UUID.randomUUID().toString()
+            rules += ModernRecurringRule(
+                id = ruleId,
+                cardId = purchase.cardId,
+                amountCents = purchase.amountCents,
+                startEpochDay = purchase.purchaseDate.toEpochDay(),
+                dayOfMonth = purchase.purchaseDate.dayOfMonth,
+                category = purchase.category,
+                note = purchase.note,
+                createdAtMillis = purchase.createdAtMillis
+            )
+            purchase.copy(recurringRuleId = ruleId)
+        }
+    }
+    return data.copy(purchases = purchases, recurringRules = rules)
+}
+
+private fun modernEnsureRecurringSchedule(input: ModernAppData): ModernAppData {
+    val data = modernMigrateLegacyRecurring(input)
+    if (data.recurringRules.none { it.active }) return data
+    val cardById = data.cards.associateBy { it.id }
+    val purchases = data.purchases.toMutableList()
+    val existing = purchases.mapNotNull { purchase ->
+        purchase.recurringRuleId?.let { ruleId -> "$ruleId:${purchase.purchaseDate.toEpochDay()}" }
+    }.toMutableSet()
+    val horizon = YearMonth.from(LocalDate.now().plusMonths(12))
+
+    data.recurringRules.asSequence().filter { it.active }.forEach { rule ->
+        val card = cardById[rule.cardId] ?: return@forEach
+        val start = LocalDate.ofEpochDay(rule.startEpochDay)
+        var month = YearMonth.from(start)
+        while (!month.isAfter(horizon)) {
+            val occurrenceDate = modernDateAtDay(month.year, month.monthValue, rule.dayOfMonth)
+            val key = "${rule.id}:${occurrenceDate.toEpochDay()}"
+            if (
+                !occurrenceDate.isBefore(start) &&
+                occurrenceDate.toEpochDay() !in rule.skippedEpochDays &&
+                key !in existing
+            ) {
+                val purchase = ModernPurchase(
+                    cardId = rule.cardId,
+                    amountCents = rule.amountCents,
+                    purchaseDate = occurrenceDate,
+                    createdAtMillis = rule.createdAtMillis + purchases.size,
+                    category = rule.category,
+                    note = rule.note,
+                    isRecurring = true,
+                    recurringRuleId = rule.id
+                )
+                purchases += modernAssignInvoice(purchase, card)
+                existing += key
+            }
+            month = month.plusMonths(1)
+        }
+    }
+    return if (purchases == data.purchases) data else data.copy(purchases = purchases)
+}
+
+private fun modernSkipRecurringOccurrence(data: ModernAppData, purchase: ModernPurchase): ModernAppData {
+    val ruleId = purchase.recurringRuleId ?: return data.copy(
+        purchases = data.purchases.filterNot { it.id == purchase.id }
+    )
+    val epoch = purchase.purchaseDate.toEpochDay()
+    val rules = data.recurringRules.map { rule ->
+        if (rule.id == ruleId) rule.copy(skippedEpochDays = (rule.skippedEpochDays + epoch).distinct()) else rule
+    }
+    return data.copy(
+        recurringRules = rules,
+        purchases = data.purchases.filterNot { it.id == purchase.id }
+    )
+}
+
+private fun modernCancelRecurringFrom(data: ModernAppData, purchase: ModernPurchase): ModernAppData {
+    val ruleId = purchase.recurringRuleId ?: return data.copy(
+        purchases = data.purchases.filterNot { it.id == purchase.id }
+    )
+    val fromDate = purchase.purchaseDate
+    return data.copy(
+        recurringRules = data.recurringRules.map { rule ->
+            if (rule.id == ruleId) rule.copy(active = false) else rule
+        },
+        purchases = data.purchases.filterNot { candidate ->
+            candidate.recurringRuleId == ruleId && !candidate.purchaseDate.isBefore(fromDate)
+        }
+    )
+}
+
 private fun modernInstallmentPeriod(purchaseDate: LocalDate, installmentNumber: Int, card: ModernCardProfile): ModernInvoicePeriod {
     var period = modernInvoiceForPurchase(purchaseDate, card)
     repeat((installmentNumber - 1).coerceAtLeast(0)) { period = modernNextInvoicePeriod(period, card) }
@@ -1871,6 +2049,22 @@ class ModernSecureStore(private val context: Context) {
                 }
             })
             put("categories", JSONArray().apply { data.categories.forEach { put(it) } })
+            put("recurringRules", JSONArray().apply {
+                data.recurringRules.forEach { rule ->
+                    put(JSONObject().apply {
+                        put("id", rule.id)
+                        put("cardId", rule.cardId)
+                        put("amountCents", rule.amountCents)
+                        put("startEpochDay", rule.startEpochDay)
+                        put("dayOfMonth", rule.dayOfMonth)
+                        put("category", rule.category)
+                        put("note", rule.note)
+                        put("active", rule.active)
+                        put("createdAtMillis", rule.createdAtMillis)
+                        put("skippedEpochDays", JSONArray().apply { rule.skippedEpochDays.forEach { put(it) } })
+                    })
+                }
+            })
             put("purchases", JSONArray().apply {
                 data.purchases.forEach { p ->
                     put(JSONObject().apply {
@@ -1888,6 +2082,7 @@ class ModernSecureStore(private val context: Context) {
                         p.installmentNumber?.let { put("installmentNumber", it) }
                         p.installmentTotal?.let { put("installmentTotal", it) }
                         put("isRecurring", p.isRecurring)
+                        p.recurringRuleId?.let { put("recurringRuleId", it) }
                     })
                 }
             })
@@ -1944,6 +2139,30 @@ class ModernSecureStore(private val context: Context) {
 
         val firstCard = cards.first()
         val cardById = cards.associateBy { it.id }
+        val recurringJson = root.optJSONArray("recurringRules") ?: JSONArray()
+        val recurringRules = buildList {
+            for (i in 0 until recurringJson.length()) {
+                val r = recurringJson.getJSONObject(i)
+                val skipped = r.optJSONArray("skippedEpochDays") ?: JSONArray()
+                val skippedDays = buildList {
+                    for (j in 0 until skipped.length()) add(skipped.optLong(j))
+                }
+                add(
+                    ModernRecurringRule(
+                        id = r.optString("id", UUID.randomUUID().toString()),
+                        cardId = r.optString("cardId", firstCard.id).ifBlank { firstCard.id },
+                        amountCents = r.optLong("amountCents", 0L),
+                        startEpochDay = r.optLong("startEpochDay", LocalDate.now().toEpochDay()),
+                        dayOfMonth = r.optInt("dayOfMonth", 1).coerceIn(1, 31),
+                        category = r.optString("category", "Outros"),
+                        note = r.optString("note", ""),
+                        active = r.optBoolean("active", true),
+                        skippedEpochDays = skippedDays,
+                        createdAtMillis = r.optLong("createdAtMillis", System.currentTimeMillis())
+                    )
+                )
+            }
+        }
         val purchasesJson = root.optJSONArray("purchases") ?: JSONArray()
         val purchases = buildList {
             for (i in 0 until purchasesJson.length()) {
@@ -1964,7 +2183,8 @@ class ModernSecureStore(private val context: Context) {
                     installmentGroupId = p.optString("installmentGroupId", "").ifBlank { null },
                     installmentNumber = if (p.has("installmentNumber")) p.optInt("installmentNumber") else null,
                     installmentTotal = if (p.has("installmentTotal")) p.optInt("installmentTotal") else null,
-                    isRecurring = p.optBoolean("isRecurring", false)
+                    isRecurring = p.optBoolean("isRecurring", false),
+                    recurringRuleId = p.optString("recurringRuleId", "").ifBlank { null }
                 )
 
                 if (dataVersion < 3 && raw.isInstallment) {
@@ -1992,6 +2212,7 @@ class ModernSecureStore(private val context: Context) {
             cards = cards,
             activeCardId = activeCardId,
             purchases = purchases,
+            recurringRules = recurringRules,
             categories = categories,
             lastModifiedMillis = root.optLong("lastModifiedMillis", 0L)
         )

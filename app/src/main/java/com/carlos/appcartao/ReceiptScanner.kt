@@ -44,7 +44,7 @@ internal class ReceiptOcrScanner {
             .addOnSuccessListener { recognized ->
                 val result = ReceiptParser.parse(recognized.text, categories)
                 recognizer.close()
-                bitmap.recycle()
+                if (!bitmap.isRecycled) bitmap.recycle()
                 if (recognized.text.isBlank()) {
                     callback(null, "Não encontrei texto legível. Aproxime a câmera, enquadre o comprovante inteiro e evite reflexos.")
                 } else {
@@ -53,7 +53,7 @@ internal class ReceiptOcrScanner {
             }
             .addOnFailureListener {
                 recognizer.close()
-                bitmap.recycle()
+                if (!bitmap.isRecycled) bitmap.recycle()
                 callback(null, "Não consegui ler o comprovante. Tente uma foto mais nítida.")
             }
     }
@@ -63,13 +63,15 @@ internal class ReceiptOcrScanner {
         BitmapFactory.decodeFile(file.absolutePath, bounds)
         if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
 
+        // Thermal receipts contain mostly high-contrast text. 2200 px on the longest side is
+        // enough for OCR while avoiding the very large bitmaps produced by modern phone cameras.
         var sample = 1
         val maxSide = maxOf(bounds.outWidth, bounds.outHeight)
-        while (maxSide / sample > 2600) sample *= 2
+        while (maxSide / sample > 2200) sample *= 2
 
         val options = BitmapFactory.Options().apply {
             inSampleSize = sample
-            inPreferredConfig = Bitmap.Config.ARGB_8888
+            inPreferredConfig = Bitmap.Config.RGB_565
         }
         val decoded = BitmapFactory.decodeFile(file.absolutePath, options) ?: return null
         val rotation = runCatching {
@@ -87,7 +89,7 @@ internal class ReceiptOcrScanner {
         if (rotation == 0f) return decoded
         val matrix = Matrix().apply { postRotate(rotation) }
         val rotated = Bitmap.createBitmap(decoded, 0, 0, decoded.width, decoded.height, matrix, true)
-        if (rotated !== decoded) decoded.recycle()
+        if (rotated !== decoded && !decoded.isRecycled) decoded.recycle()
         return rotated
     }
 }
@@ -174,7 +176,7 @@ internal object ReceiptParser {
         val banned = listOf(
             "cnpj", "cpf", "nota fiscal", "nfce", "nfc-e", "sat", "cupom fiscal",
             "documento auxiliar", "consumidor", "telefone", "endereco", "inscricao estadual",
-            "extrato", "comprovante"
+            "extrato", "comprovante", "data emissao", "data de emissao"
         )
         val candidate = lines.take(14).firstOrNull { original ->
             val normalized = normalize(original)
@@ -195,7 +197,7 @@ internal object ReceiptParser {
             has("supermercado", "mercado", "hipermercado", "atacadao", "atacadão", "hortifruti", "mercearia") -> "Mercado"
             has("padaria", "panificadora", "confeitaria") -> "Padaria"
             has("posto", "gasolina", "etanol", "diesel", "combustivel", "combustível") -> "Posto de gasolina"
-            has("farmacia", "farmácia", "drogaria", "drogam", "medicamento", "medicamentos") -> "Farmácia"
+            has("farmacia", "farmácia", "drogaria", "medicamento", "albendazol", "enterogermina") -> "Farmácia"
             has("hospital", "clinica", "clínica", "laboratorio", "laboratório", "consulta medica", "consulta médica") -> "Saúde"
             has("estacionamento", "parking") -> "Estacionamento"
             has("uber", "99app", "taxi", "táxi", "rodoviaria", "rodoviária", "passagem urbana") -> "Transporte"

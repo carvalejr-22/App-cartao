@@ -73,7 +73,9 @@ internal object ReceiptParser {
                 val cents = parseAmount(match.groupValues[1]) ?: return@forEach
                 if (cents <= 0 || cents > 1_000_000_000L) return@forEach
                 var score = 0
-                if (listOf("total a pagar", "valor total", "total geral", "valor pago", "total pago").any { line.contains(it) }) score += 1500
+                if (listOf("total a pagar", "valor total", "total geral").any { line.contains(it) }) score += 1700
+                else if (line.contains("total pago")) score += 1500
+                else if (line.contains("valor pago")) score += 1200
                 else if (Regex("\\btotal\\b").containsMatchIn(line)) score += 1100
                 else if (listOf("a pagar", "valor da compra", "valor compra", "pago").any { line.contains(it) }) score += 700
                 if (line.contains("subtotal")) score -= 500
@@ -165,7 +167,6 @@ internal object ReceiptParser {
         }
         preferred(standard ?: "")?.let { return it }
 
-        // User-created categories can also be recognized when their name appears clearly on the receipt.
         categories.firstOrNull { category ->
             val key = normalize(category)
             category != "Outros" && key.length >= 5 && all.contains(key)

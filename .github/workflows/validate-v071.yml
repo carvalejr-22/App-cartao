@@ -1,5 +1,6 @@
 name: Validate App Cartao v0.7.1
 
+# Revalidated after receipt total-priority fix.
 on:
   push:
     branches: ["main"]

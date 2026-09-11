@@ -45,7 +45,6 @@ class ReceiptParserTest {
             """.trimIndent(),
             categories
         )
-        // When both TOTAL A PAGAR and VALOR PAGO exist, the charged total is the purchase amount.
         assertEquals(15000L, result.amountCents)
         assertEquals("Posto de gasolina", result.category)
     }
@@ -65,5 +64,51 @@ class ReceiptParserTest {
         assertEquals(1450L, result.amountCents)
         assertEquals("Padaria", result.category)
         assertNotNull(result.purchaseDate)
+    }
+
+    @Test
+    fun pharmacyNfceUsesAmountToPayNotPreDiscountTotal() {
+        val result = ReceiptParser.parse(
+            """
+            DROGAM INAS VALENCA LTDA
+            CNPJ 08.603.462/0001-05
+            ALBENDAZOL 400MG 27,71
+            ENTEROGERMINA 53,38
+            Valor Total R$ 81,09
+            Desconto(s) R$ -28,49
+            VALOR A PAGAR R$ 52,60
+            Cartao de Credito 52,60
+            Troco R$ 0,00
+            NFC-e 927982 Serie 001 08/09/2026 12:22
+            Data de autorizacao: 08/09/2026 12:22
+            """.trimIndent(),
+            categories
+        )
+        assertEquals(5260L, result.amountCents)
+        assertEquals(LocalDate.of(2026, 9, 8), result.purchaseDate)
+        assertEquals("Farmácia", result.category)
+        assertEquals("DROGAM INAS VALENCA LTDA", result.description)
+    }
+
+    @Test
+    fun pharmacyCardSlipReadsPaymentValue() {
+        val result = ReceiptParser.parse(
+            """
+            DROGAM INAS VALENCA LTDA
+            RUA PADRE LUNA, 100 - VALENCA
+            Data Emissao: 08/09/2026 12:22
+            Comprovante vinculado
+            Valor do Pagamento: 52,60
+            VISA CREDITO
+            VALOR: 52,60
+            ULTRAPOPULAR PE LUNA 08 09 26-12:22
+            TRANSACAO APROVADA PELO EMISSOR
+            """.trimIndent(),
+            categories
+        )
+        assertEquals(5260L, result.amountCents)
+        assertEquals(LocalDate.of(2026, 9, 8), result.purchaseDate)
+        assertEquals("Farmácia", result.category)
+        assertEquals("DROGAM INAS VALENCA LTDA", result.description)
     }
 }

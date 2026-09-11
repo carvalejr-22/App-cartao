@@ -2,7 +2,7 @@
 
 Aplicativo Android offline-first para controle de compras e faturas de cartão de crédito.
 
-## Recursos atuais — v0.6.2
+## Recursos atuais — v0.7.0
 
 - Registro rápido de valor, data, categoria e descrição opcional.
 - Compras à vista e parceladas, com cada parcela posicionada na fatura correta.
@@ -25,7 +25,3 @@ Aplicativo Android offline-first para controle de compras e faturas de cartão d
 Abra a aba **Actions** do repositório, selecione a execução mais recente de **Build Android APK** e baixe o artefato mais recente. Dentro dele estará o arquivo `app-debug.apk`.
 
 > A versão `debug` serve para testes. Para publicar na Google Play, gere um Android App Bundle (`.aab`) de release assinado. A chave de assinatura nunca deve ser colocada no repositório público.
-
-## Backup Google Drive
-
-O código da sincronização já faz parte do aplicativo. Para a autorização funcionar numa versão distribuída, ainda é necessário configurar o projeto no Google Cloud Console: habilitar a Google Drive API e cadastrar o cliente OAuth Android para o pacote `com.carlos.appcartao` com a impressão SHA-1 do certificado usado na assinatura do app. Veja `GOOGLE_DRIVE_SETUP.md`.

@@ -1,7 +1,7 @@
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
-    id("org.jetbrains.kotlin.plugin.compose")
+    id("org.jetbrains.kotlin.plugin.compose")    testImplementation("junit:junit:4.13.2")
 }
 
 android {
@@ -12,8 +12,8 @@ android {
         applicationId = "com.carlos.appcartao"
         minSdk = 26
         targetSdk = 36
-        versionCode = 10
-        versionName = "0.6.2"
+        versionCode = 11
+        versionName = "0.7.0"
     }
 
     buildFeatures {
@@ -51,5 +51,5 @@ dependencies {
     implementation("androidx.compose.material3:material3")
     implementation("androidx.compose.material:material-icons-extended")
     implementation("androidx.work:work-runtime-ktx:2.11.2")
-    implementation("com.google.android.gms:play-services-auth:22.0.0")
+    implementation("com.google.mlkit:text-recognition:16.0.1")
 }

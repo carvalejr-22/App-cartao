@@ -4,8 +4,9 @@
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
 
     <application
-        android:allowBackup="false"
-        android:fullBackupContent="false"
+        android:allowBackup="true"
+        android:backupAgent=".ModernBackupAgent"
+        android:fullBackupOnly="false"
         android:hasFragileUserData="true"
         android:icon="@drawable/ic_launcher"
         android:roundIcon="@drawable/ic_launcher"
@@ -13,6 +14,18 @@
         android:supportsRtl="true"
         android:usesCleartextTraffic="false"
         android:theme="@android:style/Theme.Material.Light.NoActionBar">
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
+        <meta-data
+            android:name="com.google.android.backup.api_key"
+            android:value="unused" />
         <activity
             android:name=".ModernCardActivity"
             android:exported="true">

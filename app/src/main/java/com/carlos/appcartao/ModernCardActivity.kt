@@ -2,13 +2,13 @@ package com.carlos.appcartao
 
 import android.app.DatePickerDialog
 import android.content.Context
+import android.net.Uri
 import android.os.Bundle
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import android.util.Base64
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
-import androidx.activity.result.IntentSenderRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
@@ -40,6 +40,7 @@ import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.DeleteOutline
 import androidx.compose.material.icons.outlined.Edit
+import androidx.compose.material.icons.outlined.PhotoCamera
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -53,7 +54,6 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -71,6 +71,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.File
 import java.math.BigDecimal
 import java.math.RoundingMode
 import java.security.KeyStore
@@ -85,9 +86,10 @@ import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
+import androidx.core.content.FileProvider
 import kotlin.math.max
 
-private const val MODERN_DATA_VERSION = 6
+private const val MODERN_DATA_VERSION = 7
 private const val LEGACY_CARD_ID = "legacy-card-1"
 
 private val ModernColors = lightColorScheme(
@@ -143,7 +145,8 @@ data class ModernPurchase(
     val invoiceDueEpochDay: Long? = null,
     val installmentGroupId: String? = null,
     val installmentNumber: Int? = null,
-    val installmentTotal: Int? = null
+    val installmentTotal: Int? = null,
+    val isRecurring: Boolean = false
 ) {
     val isInstallment: Boolean
         get() = installmentGroupId != null && installmentNumber != null && installmentTotal != null && installmentTotal > 1
@@ -167,166 +170,87 @@ private enum class ModernScreen { HOME, INVOICE, ANALYSIS, SETTINGS }
 
 class ModernCardActivity : ComponentActivity() {
     private lateinit var store: ModernSecureStore
-    private lateinit var cloudSync: GoogleDriveSync
-    private var pendingCloudCallback: ((CloudSyncResult) -> Unit)? = null
+    private var pendingReceiptCallback: ((ReceiptScanResult?, String?) -> Unit)? = null
+    private var pendingReceiptUri: Uri? = null
+    private var pendingReceiptFile: File? = null
+    private var pendingReceiptCategories: List<String> = emptyList()
 
-    private val cloudAuthorizationLauncher =
-        registerForActivityResult(ActivityResultContracts.StartIntentSenderForResult()) { result ->
-            val callback = pendingCloudCallback
-            if (callback == null) return@registerForActivityResult
-
-            // Some Google Play Services versions can return an authorization payload
-            // even when the Activity result code is not RESULT_OK. Always inspect the
-            // payload first so a valid grant is not incorrectly reported as cancelled.
-            result.data?.let { intent ->
-                try {
-                    val authorization = cloudSync.authorizationResultFromIntent(intent)
-                    finishCloudAuthorization(authorization, callback)
-                    return@registerForActivityResult
-                } catch (error: Exception) {
-                    if (result.resultCode == RESULT_OK) {
-                        pendingCloudCallback = null
-                        callback(CloudSyncResult(false, cloudSync.authorizationErrorMessage(error)))
-                        return@registerForActivityResult
-                    }
-                }
+    private val receiptCameraLauncher =
+        registerForActivityResult(ActivityResultContracts.TakePicture()) { captured ->
+            val callback = pendingReceiptCallback
+            val uri = pendingReceiptUri
+            if (callback == null || uri == null) {
+                clearReceiptCapture()
+                return@registerForActivityResult
+            }
+            if (!captured) {
+                callback(null, "Foto cancelada. Nenhuma compra foi alterada.")
+                clearReceiptCapture()
+                return@registerForActivityResult
             }
 
-            // Re-check silently after the authorization UI closes. If access was
-            // granted, finish normally. If the user really cancelled, Google will
-            // still report a resolution as required. Configuration errors are now
-            // surfaced instead of being mislabeled as cancellation.
-            recheckAuthorizationAfterResolution(
-                callback = callback,
-                userCancelled = result.resultCode != RESULT_OK
-            )
+            ReceiptOcrScanner(this).scan(uri, pendingReceiptCategories) { result, error ->
+                runOnUiThread {
+                    callback(result, error)
+                    clearReceiptCapture()
+                }
+            }
         }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         store = ModernSecureStore(this)
-        cloudSync = GoogleDriveSync(this)
         setContent {
             MaterialTheme(colorScheme = ModernColors) {
                 ModernCreditCardApp(
                     store = store,
-                    cloudSync = cloudSync,
-                    onAuthorizeAndSync = ::authorizeAndSync,
-                    onDisconnectCloud = ::disconnectCloud
+                    onScanReceipt = ::captureAndReadReceipt
                 )
             }
         }
     }
 
-    private fun authorizeAndSync(callback: (CloudSyncResult) -> Unit) {
-        pendingCloudCallback = callback
-        cloudSync.requestAuthorization { authorization, error ->
-            runOnUiThread {
-                when {
-                    error != null || authorization == null -> {
-                        pendingCloudCallback = null
-                        val message = if (error != null) {
-                            cloudSync.authorizationErrorMessage(error)
-                        } else {
-                            "O Google não retornou uma autorização válida."
-                        }
-                        callback(CloudSyncResult(false, message))
-                    }
-                    authorization.hasResolution() -> {
-                        val pendingIntent = authorization.pendingIntent
-                        if (pendingIntent == null) {
-                            pendingCloudCallback = null
-                            callback(CloudSyncResult(false, "O Google não retornou uma tela de autorização válida."))
-                        } else {
-                            cloudAuthorizationLauncher.launch(
-                                IntentSenderRequest.Builder(pendingIntent.intentSender).build()
-                            )
-                        }
-                    }
-                    else -> finishCloudAuthorization(authorization, callback)
-                }
-            }
-        }
-    }
-
-    private fun recheckAuthorizationAfterResolution(
-        callback: ((CloudSyncResult) -> Unit)?,
-        userCancelled: Boolean
+    private fun captureAndReadReceipt(
+        categories: List<String>,
+        callback: (ReceiptScanResult?, String?) -> Unit
     ) {
-        cloudSync.requestAuthorization { authorization, error ->
-            runOnUiThread {
-                when {
-                    error != null -> {
-                        pendingCloudCallback = null
-                        callback?.invoke(CloudSyncResult(false, cloudSync.authorizationErrorMessage(error)))
-                    }
-                    authorization != null && !authorization.hasResolution() && !authorization.accessToken.isNullOrBlank() -> {
-                        finishCloudAuthorization(authorization, callback)
-                    }
-                    else -> {
-                        pendingCloudCallback = null
-                        val message = if (userCancelled) {
-                            "Conexão com a Conta Google cancelada."
-                        } else {
-                            "A Conta Google ainda não autorizou o backup. Tente novamente."
-                        }
-                        callback?.invoke(CloudSyncResult(false, message))
-                    }
-                }
-            }
+        try {
+            val dir = File(cacheDir, "receipts").apply { mkdirs() }
+            val file = File.createTempFile("receipt_", ".jpg", dir)
+            val uri = FileProvider.getUriForFile(this, "$packageName.fileprovider", file)
+            pendingReceiptCallback = callback
+            pendingReceiptCategories = categories
+            pendingReceiptFile = file
+            pendingReceiptUri = uri
+            receiptCameraLauncher.launch(uri)
+        } catch (error: Exception) {
+            clearReceiptCapture()
+            callback(null, "Não foi possível abrir a câmera neste aparelho.")
         }
     }
 
-    private fun finishCloudAuthorization(
-        authorization: com.google.android.gms.auth.api.identity.AuthorizationResult,
-        callback: ((CloudSyncResult) -> Unit)?
-    ) {
-        val token = authorization.accessToken
-        if (token.isNullOrBlank()) {
-            pendingCloudCallback = null
-            callback?.invoke(CloudSyncResult(false, "A Conta Google não forneceu autorização para o backup."))
-            return
-        }
-
-        cloudSync.setEnabled(true)
-        cloudSync.syncWithToken(store, token) { syncResult ->
-            pendingCloudCallback = null
-            callback?.invoke(syncResult)
-        }
-    }
-
-    private fun disconnectCloud(callback: (String) -> Unit) {
-        cloudSync.disconnect { message -> runOnUiThread { callback(message) } }
+    private fun clearReceiptCapture() {
+        pendingReceiptFile?.delete()
+        pendingReceiptFile = null
+        pendingReceiptUri = null
+        pendingReceiptCategories = emptyList()
+        pendingReceiptCallback = null
     }
 }
-
 @Composable
 private fun ModernCreditCardApp(
     store: ModernSecureStore,
-    cloudSync: GoogleDriveSync,
-    onAuthorizeAndSync: ((CloudSyncResult) -> Unit) -> Unit,
-    onDisconnectCloud: ((String) -> Unit) -> Unit
+    onScanReceipt: (List<String>, (ReceiptScanResult?, String?) -> Unit) -> Unit
 ) {
     var data by remember { mutableStateOf(store.read()) }
     var screen by remember { mutableStateOf(ModernScreen.HOME) }
-    var cloudEnabled by remember { mutableStateOf(cloudSync.isEnabled()) }
-    var cloudMessage by remember { mutableStateOf(cloudSync.lastStatusText()) }
-
-    LaunchedEffect(Unit) {
-        cloudSync.tryRestoreExistingGrant(store) { result ->
-            if (result != null) {
-                cloudEnabled = cloudSync.isEnabled()
-                cloudMessage = result.message
-                if (result.restoredFromCloud) data = store.read()
-            }
-        }
-    }
+    val appContext = androidx.compose.ui.platform.LocalContext.current.applicationContext
 
     fun persist(newData: ModernAppData) {
         val normalized = normalizeModernData(newData).copy(lastModifiedMillis = System.currentTimeMillis())
         store.write(normalized)
         data = normalized
-        if (cloudSync.isEnabled()) cloudSync.enqueueSync()
+        AutomaticBackupScheduler.schedule(appContext)
     }
 
     fun selectCard(cardId: String) {
@@ -392,6 +316,7 @@ private fun ModernCreditCardApp(
                     data = data,
                     onSelectCard = ::selectCard,
                     onAddCard = ::addCard,
+                    onScanReceipt = onScanReceipt,
                     onAddPurchases = { purchases -> persist(data.copy(purchases = data.purchases + purchases)) }
                 )
 
@@ -432,23 +357,7 @@ private fun ModernCreditCardApp(
                             )
                         }
                     },
-                    onCategoriesChanged = { categories -> persist(data.copy(categories = categories)) },
-                    cloudEnabled = cloudEnabled,
-                    cloudMessage = cloudMessage,
-                    onCloudSync = {
-                        cloudMessage = "Conectando com a Conta Google…"
-                        onAuthorizeAndSync { result ->
-                            cloudEnabled = cloudSync.isEnabled()
-                            cloudMessage = result.message
-                            if (result.restoredFromCloud) data = store.read()
-                        }
-                    },
-                    onCloudDisconnect = {
-                        onDisconnectCloud { message ->
-                            cloudEnabled = cloudSync.isEnabled()
-                            cloudMessage = message
-                        }
-                    }
+                    onCategoriesChanged = { categories -> persist(data.copy(categories = categories)) }
                 )
             }
         }
@@ -460,6 +369,7 @@ private fun ModernHomeScreen(
     data: ModernAppData,
     onSelectCard: (String) -> Unit,
     onAddCard: () -> Unit,
+    onScanReceipt: (List<String>, (ReceiptScanResult?, String?) -> Unit) -> Unit,
     onAddPurchases: (List<ModernPurchase>) -> Unit
 ) {
     val today = LocalDate.now()
@@ -478,7 +388,10 @@ private fun ModernHomeScreen(
     var showCategories by remember { mutableStateOf(false) }
     var showCardPicker by remember { mutableStateOf(false) }
     var isInstallment by remember { mutableStateOf(false) }
+    var isRecurring by remember { mutableStateOf(false) }
     var installmentCount by remember { mutableStateOf("12") }
+    var isScanningReceipt by remember { mutableStateOf(false) }
+    var scanMessage by remember { mutableStateOf<String?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
     val context = androidx.compose.ui.platform.LocalContext.current
 
@@ -557,6 +470,48 @@ private fun ModernHomeScreen(
         }
 
         item {
+            FilledTonalButton(
+                onClick = {
+                    isScanningReceipt = true
+                    scanMessage = "Lendo comprovante…"
+                    onScanReceipt(data.categories) { result, failure ->
+                        isScanningReceipt = false
+                        if (result != null) {
+                            result.amountCents?.let { amount = formatModernEditableAmount(it) }
+                            result.purchaseDate?.let { date = it }
+                            result.category?.let { detected ->
+                                data.categories.firstOrNull { it.equals(detected, ignoreCase = true) }?.let { category = it }
+                            }
+                            if (result.description.isNotBlank()) note = result.description
+                            error = null
+                            scanMessage = if (result.amountCents != null) {
+                                "Comprovante lido. Confira os campos antes de salvar."
+                            } else {
+                                "Texto lido, mas o valor total não ficou claro. Confira e preencha o valor."
+                            }
+                        } else {
+                            scanMessage = failure ?: "Não consegui ler esse comprovante. Tente outra foto."
+                        }
+                    }
+                },
+                enabled = !isScanningReceipt,
+                modifier = Modifier.fillMaxWidth().height(50.dp),
+                shape = RoundedCornerShape(16.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Outlined.PhotoCamera,
+                    contentDescription = null,
+                    modifier = Modifier.size(18.dp)
+                )
+                Spacer(Modifier.width(8.dp))
+                Text(if (isScanningReceipt) "Lendo comprovante…" else "Ler comprovante pela câmera")
+            }
+            scanMessage?.let {
+                Spacer(Modifier.height(4.dp))
+                Text(it, style = MaterialTheme.typography.bodySmall, color = Color(0xFF667085))
+            }
+        }
+        item {
             OutlinedTextField(
                 value = amount,
                 onValueChange = { amount = it; error = null },
@@ -614,6 +569,7 @@ private fun ModernHomeScreen(
                             checked = isInstallment,
                             onCheckedChange = {
                                 isInstallment = it
+                                if (it) isRecurring = false
                                 error = null
                             }
                         )
@@ -630,6 +586,38 @@ private fun ModernHomeScreen(
                             singleLine = true
                         )
                     }
+                }
+            }
+        }
+        item {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(18.dp),
+                colors = CardDefaults.cardColors(
+                    containerColor = if (isRecurring) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surface
+                )
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("↻", color = MaterialTheme.colorScheme.primary, fontSize = 22.sp)
+                    Spacer(Modifier.width(10.dp))
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("Compra recorrente", fontWeight = FontWeight.SemiBold)
+                        Text(
+                            "Marque para identificar cobranças que se repetem. Não cria lançamentos futuros sozinho.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = Color(0xFF667085)
+                        )
+                    }
+                    Switch(
+                        checked = isRecurring,
+                        onCheckedChange = {
+                            isRecurring = it
+                            if (it) isInstallment = false
+                        }
+                    )
                 }
             }
         }
@@ -667,7 +655,8 @@ private fun ModernHomeScreen(
                                 amountCents = cents,
                                 purchaseDate = date,
                                 category = category,
-                                note = note.trim()
+                                note = note.trim(),
+                                isRecurring = isRecurring
                             )
                             val count = parcels ?: 1
                             val purchases = if (count == 1) {
@@ -680,7 +669,9 @@ private fun ModernHomeScreen(
                             note = ""
                             date = LocalDate.now()
                             isInstallment = false
+                            isRecurring = false
                             installmentCount = "12"
+                            scanMessage = null
                             error = null
                         }
                     }
@@ -877,7 +868,11 @@ private fun ModernInvoiceScreen(
                                     fontWeight = FontWeight.SemiBold
                                 )
                             } else {
-                                Text(purchase.category, style = MaterialTheme.typography.bodySmall, color = Color(0xFF667085))
+                                Text(
+                                    if (purchase.isRecurring) "${purchase.category} • Recorrente" else purchase.category,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = if (purchase.isRecurring) MaterialTheme.colorScheme.primary else Color(0xFF667085)
+                                )
                             }
                             Text("Compra em ${formatModernDate(purchase.purchaseDate)}", style = MaterialTheme.typography.labelSmall, color = Color(0xFF98A2B3))
                         }
@@ -1391,11 +1386,7 @@ private fun ModernSettingsScreen(
     onSelectCard: (String) -> Unit,
     onSaveCard: (ModernCardProfile) -> Unit,
     onDeleteCard: (String) -> Unit,
-    onCategoriesChanged: (List<String>) -> Unit,
-    cloudEnabled: Boolean,
-    cloudMessage: String?,
-    onCloudSync: () -> Unit,
-    onCloudDisconnect: () -> Unit
+    onCategoriesChanged: (List<String>) -> Unit
 ) {
     val card = data.cards.firstOrNull { it.id == data.activeCardId } ?: data.cards.first()
     var name by remember(card.id, card.name) { mutableStateOf(card.name) }
@@ -1539,34 +1530,31 @@ private fun ModernSettingsScreen(
         }
         item {
             Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(20.dp)) {
-                Column(modifier = Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Text("Backup na Conta Google", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                Column(modifier = Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("Backup automático", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
                     Text(
-                        if (cloudEnabled) {
-                            "Ativado. O app continua funcionando offline e sincroniza as mudanças quando houver internet."
-                        } else {
-                            "Opcional. Conecte uma Conta Google para restaurar seus dados ao trocar de celular ou reinstalar o app."
-                        },
+                        "Ativo sem login dentro do app. Toda alteração é salva no aparelho imediatamente e entra na fila de backup quando houver internet.",
                         color = Color(0xFF667085),
                         style = MaterialTheme.typography.bodySmall
                     )
-                    Button(
-                        onClick = onCloudSync,
-                        modifier = Modifier.fillMaxWidth().height(50.dp),
-                        shape = RoundedCornerShape(16.dp)
+                    Card(
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer),
+                        shape = RoundedCornerShape(14.dp)
                     ) {
-                        Text(if (cloudEnabled) "Sincronizar agora" else "Conectar Conta Google", fontWeight = FontWeight.Bold)
+                        Column(modifier = Modifier.fillMaxWidth().padding(12.dp)) {
+                            Text("✓ Proteção automática", fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.primary)
+                            Text(
+                                "Se estiver offline, o pedido de backup aguarda a conexão. O Android faz o envio em segundo plano no momento permitido pelo sistema.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = Color(0xFF667085)
+                            )
+                        }
                     }
-                    if (cloudEnabled) {
-                        OutlinedButton(
-                            onClick = onCloudDisconnect,
-                            modifier = Modifier.fillMaxWidth().height(48.dp),
-                            shape = RoundedCornerShape(16.dp)
-                        ) { Text("Desconectar backup") }
-                    }
-                    cloudMessage?.let {
-                        Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
-                    }
+                    Text(
+                        "Não exige Google Cloud, Client ID ou configuração do usuário dentro do aplicativo.",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = Color(0xFF98A2B3)
+                    )
                 }
             }
         }
@@ -1579,8 +1567,8 @@ private fun ModernSettingsScreen(
                 Column(modifier = Modifier.padding(18.dp)) {
                     Text("Leve e privado", fontWeight = FontWeight.Bold)
                     Spacer(Modifier.height(6.dp))
-                    Text("• Funciona offline; a internet só é usada quando o backup Google está autorizado.")
-                    Text("• A sincronização usa a pasta privada appData do Google Drive, invisível no Meu Drive.")
+                    Text("• Funciona offline; alterações são salvas localmente na hora.")
+                    Text("• O pedido de backup automático só é enviado quando houver conexão.")
                     Text("• Dados criptografados com AES-GCM e chave no Android Keystore.")
                     Text("• Interface usa listas sob demanda para evitar carregar itens fora da tela.")
                     Text("• Evite salvar número do cartão, CVV ou senha nas descrições.")
@@ -1769,6 +1757,9 @@ private fun modernShortPeriodLabel(period: ModernInvoicePeriod): String =
 private fun formatModernMoney(cents: Long): String =
     modernCurrencyFormatter.format(BigDecimal(cents).divide(BigDecimal(100)))
 
+private fun formatModernEditableAmount(cents: Long): String =
+    "%.2f".format(Locale("pt", "BR"), cents / 100.0)
+
 private fun parseModernMoneyToCents(raw: String): Long? {
     val cleaned = raw.trim().replace("R$", "").replace(" ", "")
     if (cleaned.isBlank()) return null
@@ -1872,6 +1863,7 @@ class ModernSecureStore(private val context: Context) {
                         p.installmentGroupId?.let { put("installmentGroupId", it) }
                         p.installmentNumber?.let { put("installmentNumber", it) }
                         p.installmentTotal?.let { put("installmentTotal", it) }
+                        put("isRecurring", p.isRecurring)
                     })
                 }
             })
@@ -1947,7 +1939,8 @@ class ModernSecureStore(private val context: Context) {
                     invoiceDueEpochDay = if (p.has("invoiceDueEpochDay")) p.optLong("invoiceDueEpochDay") else null,
                     installmentGroupId = p.optString("installmentGroupId", "").ifBlank { null },
                     installmentNumber = if (p.has("installmentNumber")) p.optInt("installmentNumber") else null,
-                    installmentTotal = if (p.has("installmentTotal")) p.optInt("installmentTotal") else null
+                    installmentTotal = if (p.has("installmentTotal")) p.optInt("installmentTotal") else null,
+                    isRecurring = p.optBoolean("isRecurring", false)
                 )
 
                 if (dataVersion < 3 && raw.isInstallment) {

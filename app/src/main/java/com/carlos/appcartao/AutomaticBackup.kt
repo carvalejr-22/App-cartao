@@ -13,6 +13,7 @@ import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.Worker
 import androidx.work.WorkerParameters
+import java.util.concurrent.TimeUnit
 
 internal data class AutomaticBackupStatus(
     val pending: Boolean,
@@ -71,21 +72,31 @@ internal object AutomaticBackupStatusStore {
 
 object AutomaticBackupScheduler {
     private const val UNIQUE_WORK = "meu_cartao_android_backup_request"
+    private const val COALESCE_SECONDS = 45L
 
+    /**
+     * Batches a burst of edits into one backup request. No network traffic is created while
+     * offline; the work only becomes eligible when Android reports an active connection.
+     */
     fun schedule(context: Context) {
-        AutomaticBackupStatusStore.markChanged(context.applicationContext)
+        val appContext = context.applicationContext
+        AutomaticBackupStatusStore.markChanged(appContext)
         val constraints = Constraints.Builder()
             .setRequiredNetworkType(NetworkType.CONNECTED)
             .build()
         val request = OneTimeWorkRequestBuilder<AndroidBackupRequestWorker>()
             .setConstraints(constraints)
+            .setInitialDelay(COALESCE_SECONDS, TimeUnit.SECONDS)
             .build()
-        WorkManager.getInstance(context.applicationContext).enqueueUniqueWork(
+        WorkManager.getInstance(appContext).enqueueUniqueWork(
             UNIQUE_WORK,
             ExistingWorkPolicy.REPLACE,
             request
         )
     }
+
+    fun isSystemBackupEnabled(context: Context): Boolean =
+        runCatching { BackupManager(context.applicationContext).isBackupEnabled }.getOrDefault(false)
 }
 
 class AndroidBackupRequestWorker(

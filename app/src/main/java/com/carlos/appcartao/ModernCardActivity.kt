@@ -1462,10 +1462,7 @@ private fun ModernSettingsScreen(
     val isMainCard = card.id == data.cards.first().id
     val backupContext = androidx.compose.ui.platform.LocalContext.current.applicationContext
     val backupStatus = remember(data.lastModifiedMillis) { AutomaticBackupStatusStore.read(backupContext) }
-    val systemBackupEnabled = remember(data.lastModifiedMillis) { AutomaticBackupScheduler.isSystemBackupEnabled(backupContext) }
     val backupStatusText = when {
-        !systemBackupEnabled ->
-            "O backup do Android está desativado neste aparelho. Ative o backup do sistema para permitir restauração após reinstalação."
         backupStatus.lastRestoreMillis > 0L && backupStatus.lastRestoreMillis >= backupStatus.lastCompletedMillis ->
             "Dados restaurados pelo Android em ${formatAutomaticBackupMoment(backupStatus.lastRestoreMillis)}."
         backupStatus.pending && backupStatus.lastRequestMillis >= backupStatus.lastChangeMillis && backupStatus.lastRequestMillis > 0L ->
@@ -1623,9 +1620,9 @@ private fun ModernSettingsScreen(
                     ) {
                         Column(modifier = Modifier.fillMaxWidth().padding(12.dp)) {
                             Text(
-                                if (systemBackupEnabled) "✓ Proteção automática ativa" else "⚠ Backup do Android desativado",
+                                "✓ Proteção automática configurada",
                                 fontWeight = FontWeight.SemiBold,
-                                color = if (systemBackupEnabled) MaterialTheme.colorScheme.primary else Color(0xFFB54708)
+                                color = MaterialTheme.colorScheme.primary
                             )
                             Text(
                                 backupStatusText,

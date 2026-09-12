@@ -12,6 +12,7 @@ import java.math.BigDecimal
 import java.math.RoundingMode
 import java.text.Normalizer
 import java.time.LocalDate
+import java.util.concurrent.atomic.AtomicBoolean
 
 internal data class ReceiptScanResult(
     val amountCents: Long?,
@@ -27,35 +28,73 @@ internal class ReceiptOcrScanner {
         categories: List<String>,
         callback: (ReceiptScanResult?, String?) -> Unit
     ) {
+        val delivered = AtomicBoolean(false)
+        fun deliver(result: ReceiptScanResult?, message: String?) {
+            if (!delivered.compareAndSet(false, true)) return
+            runCatching { callback(result, message) }
+        }
+
         if (!file.exists() || file.length() <= 0L) {
-            callback(null, "A câmera não gravou a foto corretamente. Tente novamente.")
+            deliver(null, "A câmera não gravou a foto corretamente. Tente novamente.")
             return
         }
 
-        val bitmap = runCatching { decodeReceiptBitmap(file) }.getOrNull()
-        if (bitmap == null) {
-            callback(null, "Não foi possível abrir a foto do comprovante. Tente novamente.")
+        val bitmap = try {
+            decodeReceiptBitmap(file)
+        } catch (_: OutOfMemoryError) {
+            deliver(null, "A foto ficou grande demais para ser processada. Tente novamente aproximando o comprovante.")
+            return
+        } catch (_: Exception) {
+            deliver(null, "Não foi possível abrir a foto do comprovante. Tente novamente.")
             return
         }
 
-        val image = InputImage.fromBitmap(bitmap, 0)
-        val recognizer = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
-        recognizer.process(image)
-            .addOnSuccessListener { recognized ->
-                val result = ReceiptParser.parse(recognized.text, categories)
-                recognizer.close()
-                if (!bitmap.isRecycled) bitmap.recycle()
-                if (recognized.text.isBlank()) {
-                    callback(null, "Não encontrei texto legível. Aproxime a câmera, enquadre o comprovante inteiro e evite reflexos.")
-                } else {
-                    callback(result, null)
+        if (bitmap == null || bitmap.isRecycled) {
+            deliver(null, "Não foi possível abrir a foto do comprovante. Tente novamente.")
+            return
+        }
+
+        val recognizer = try {
+            TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
+        } catch (_: Exception) {
+            if (!bitmap.isRecycled) bitmap.recycle()
+            deliver(null, "O leitor de texto não iniciou corretamente. Feche e abra o app e tente de novo.")
+            return
+        }
+
+        try {
+            val image = InputImage.fromBitmap(bitmap, 0)
+            recognizer.process(image)
+                .addOnSuccessListener { recognized ->
+                    val text = recognized.text.orEmpty()
+                    if (text.isBlank()) {
+                        deliver(null, "Não encontrei texto legível. Aproxime a câmera, enquadre o comprovante inteiro e evite reflexos.")
+                        return@addOnSuccessListener
+                    }
+
+                    val result = runCatching { ReceiptParser.parse(text, categories) }.getOrNull()
+                    if (result == null) {
+                        deliver(null, "O comprovante foi fotografado, mas ocorreu um erro ao interpretar os dados. Tente novamente.")
+                    } else {
+                        deliver(result, null)
+                    }
                 }
-            }
-            .addOnFailureListener {
-                recognizer.close()
-                if (!bitmap.isRecycled) bitmap.recycle()
-                callback(null, "Não consegui ler o comprovante. Tente uma foto mais nítida.")
-            }
+                .addOnFailureListener {
+                    deliver(null, "Não consegui ler o comprovante. Tente uma foto mais nítida.")
+                }
+                .addOnCompleteListener {
+                    runCatching { recognizer.close() }
+                    if (!bitmap.isRecycled) bitmap.recycle()
+                }
+        } catch (_: OutOfMemoryError) {
+            runCatching { recognizer.close() }
+            if (!bitmap.isRecycled) bitmap.recycle()
+            deliver(null, "A foto ficou grande demais para ser processada. Tente novamente aproximando o comprovante.")
+        } catch (_: Exception) {
+            runCatching { recognizer.close() }
+            if (!bitmap.isRecycled) bitmap.recycle()
+            deliver(null, "Não consegui iniciar a leitura da foto. Tente novamente.")
+        }
     }
 
     private fun decodeReceiptBitmap(file: File): Bitmap? {
@@ -63,15 +102,16 @@ internal class ReceiptOcrScanner {
         BitmapFactory.decodeFile(file.absolutePath, bounds)
         if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
 
-        // Thermal receipts contain mostly high-contrast text. 2200 px on the longest side is
-        // enough for OCR while avoiding the very large bitmaps produced by modern phone cameras.
+        // Keep the image small enough for low-memory phones, but use ARGB_8888 because it is the
+        // most broadly supported bitmap format in the ML Kit image pipeline. The previous RGB_565
+        // optimization was more memory-efficient but proved less robust on some Android devices.
         var sample = 1
         val maxSide = maxOf(bounds.outWidth, bounds.outHeight)
-        while (maxSide / sample > 2200) sample *= 2
+        while (maxSide / sample > 1800) sample *= 2
 
         val options = BitmapFactory.Options().apply {
             inSampleSize = sample
-            inPreferredConfig = Bitmap.Config.RGB_565
+            inPreferredConfig = Bitmap.Config.ARGB_8888
         }
         val decoded = BitmapFactory.decodeFile(file.absolutePath, options) ?: return null
         val rotation = runCatching {
@@ -87,10 +127,15 @@ internal class ReceiptOcrScanner {
         }.getOrDefault(0f)
 
         if (rotation == 0f) return decoded
-        val matrix = Matrix().apply { postRotate(rotation) }
-        val rotated = Bitmap.createBitmap(decoded, 0, 0, decoded.width, decoded.height, matrix, true)
-        if (rotated !== decoded && !decoded.isRecycled) decoded.recycle()
-        return rotated
+        return try {
+            val matrix = Matrix().apply { postRotate(rotation) }
+            val rotated = Bitmap.createBitmap(decoded, 0, 0, decoded.width, decoded.height, matrix, true)
+            if (rotated !== decoded && !decoded.isRecycled) decoded.recycle()
+            rotated
+        } catch (error: Throwable) {
+            if (!decoded.isRecycled) decoded.recycle()
+            throw error
+        }
     }
 }
 

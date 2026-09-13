@@ -23,6 +23,12 @@
                 android:name="android.support.FILE_PROVIDER_PATHS"
                 android:resource="@xml/file_paths" />
         </provider>
+
+        <!-- Ask Google Play Services to keep the Latin OCR module available for receipt scans. -->
+        <meta-data
+            android:name="com.google.mlkit.vision.DEPENDENCIES"
+            android:value="ocr" />
+
         <meta-data
             android:name="com.google.android.backup.api_key"
             android:value="unused" />

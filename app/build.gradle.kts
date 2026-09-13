@@ -14,6 +14,7 @@ android {
         targetSdk = 36
         versionCode = 15
         versionName = "0.8.2"
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
     buildFeatures {
@@ -22,7 +23,9 @@ android {
 
     buildTypes {
         debug {
-            isDebuggable = false
+            // The debug APK stays minified so the OCR smoke test exercises the same R8 behavior
+            // that previously broke the release build, while remaining debuggable for instrumentation.
+            isDebuggable = true
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
@@ -53,5 +56,8 @@ dependencies {
     implementation("androidx.work:work-runtime-ktx:2.11.2")
     implementation("androidx.exifinterface:exifinterface:1.4.1")
     implementation("com.google.mlkit:text-recognition:16.0.1")
+
     testImplementation("junit:junit:4.13.2")
+    androidTestImplementation("androidx.test.ext:junit:1.2.1")
+    androidTestImplementation("androidx.test:runner:1.6.2")
 }

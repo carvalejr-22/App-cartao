@@ -1,9 +1,10 @@
-name: OCR device smoke v0.8.4
+name: OCR device smoke v0.8.5
 
 on:
   push:
     branches: ["main"]
     paths:
+      - "app/**"
       - ".github/workflows/ocr-device-smoke-v082.yml"
   workflow_dispatch:
 
@@ -31,7 +32,7 @@ jobs:
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
-      # Runs the actual Google Play Services ML Kit recognizer in Android, not only JVM parser tests.
+      # Runs the actual bundled ML Kit recognizer inside Android, not only JVM parser tests.
       - name: Run real Android OCR initialization and recognition test
         uses: reactivecircus/android-emulator-runner@v2
         with:

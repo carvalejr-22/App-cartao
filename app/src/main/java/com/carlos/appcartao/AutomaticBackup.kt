@@ -72,21 +72,30 @@ internal object AutomaticBackupStatusStore {
 
 object AutomaticBackupScheduler {
     private const val UNIQUE_WORK = "meu_cartao_android_backup_request"
-    private const val COALESCE_SECONDS = 45L
+    private const val RETRY_DELAY_SECONDS = 30L
 
     /**
-     * Batches a burst of edits into one backup request. No network traffic is created while
-     * offline; the work only becomes eligible when Android reports an active connection.
+     * Saves locally first, then immediately tells Android that cloud-backup data changed.
+     * BackupManager only signals the system transport; Android itself batches and schedules the
+     * actual network transfer. A delayed, network-constrained retry is kept as a safety net so a
+     * transient transport/service problem does not leave the newest edit without another request.
      */
     fun schedule(context: Context) {
         val appContext = context.applicationContext
         AutomaticBackupStatusStore.markChanged(appContext)
+
+        runCatching {
+            BackupManager(appContext).dataChanged()
+        }.onSuccess {
+            AutomaticBackupStatusStore.markRequested(appContext)
+        }
+
         val constraints = Constraints.Builder()
             .setRequiredNetworkType(NetworkType.CONNECTED)
             .build()
         val request = OneTimeWorkRequestBuilder<AndroidBackupRequestWorker>()
             .setConstraints(constraints)
-            .setInitialDelay(COALESCE_SECONDS, TimeUnit.SECONDS)
+            .setInitialDelay(RETRY_DELAY_SECONDS, TimeUnit.SECONDS)
             .build()
         WorkManager.getInstance(appContext).enqueueUniqueWork(
             UNIQUE_WORK,
@@ -101,9 +110,11 @@ class AndroidBackupRequestWorker(
     params: WorkerParameters
 ) : Worker(appContext, params) {
     override fun doWork(): Result {
-        AutomaticBackupStatusStore.markRequested(applicationContext)
-        BackupManager(applicationContext).dataChanged()
-        return Result.success()
+        return runCatching {
+            BackupManager(applicationContext).dataChanged()
+            AutomaticBackupStatusStore.markRequested(applicationContext)
+            Result.success()
+        }.getOrElse { Result.retry() }
     }
 }
 

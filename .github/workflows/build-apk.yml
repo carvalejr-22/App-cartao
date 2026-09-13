@@ -11,7 +11,7 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
 
     steps:
       - name: Checkout
@@ -34,13 +34,18 @@ jobs:
           packages: "platform-tools platforms;android-36 build-tools;36.0.0"
           log-accepted-android-sdk-licenses: false
 
-      - name: Build optimized debug APK
-        run: gradle --no-daemon :app:assembleDebug
+      - name: Run unit tests
+        run: gradle --no-daemon :app:testDebugUnitTest
 
-      - name: Upload APK
+      - name: Build debug and optimized release APKs
+        run: gradle --no-daemon :app:assembleDebug :app:assembleRelease
+
+      - name: Upload validated APK package
         uses: actions/upload-artifact@v4
         with:
-          name: App-cartao-v0.8.3
-          path: app/build/outputs/apk/debug/app-debug.apk
+          name: Meu-Cartao-v0.8.4-validado
+          path: |
+            app/build/outputs/apk/debug/app-debug.apk
+            app/build/outputs/apk/release/app-release-unsigned.apk
           if-no-files-found: error
           retention-days: 30

@@ -42,11 +42,9 @@ jobs:
           disable-animations: true
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
           script: |
-            set -eu
             gradle --no-daemon :app:assembleRelease :app:assembleDebugAndroidTest
             keytool -genkeypair -v -keystore /tmp/ocr-ci.jks -storepass android -keypass android -alias ocrci -keyalg RSA -keysize 2048 -validity 2 -dname "CN=OCR CI" >/dev/null 2>&1
-            APKSIGNER="$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -1)"
-            "$APKSIGNER" sign --ks /tmp/ocr-ci.jks --ks-pass pass:android --key-pass pass:android --out /tmp/app-release-signed.apk app/build/outputs/apk/release/app-release-unsigned.apk
+            "$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -1)" sign --ks /tmp/ocr-ci.jks --ks-pass pass:android --key-pass pass:android --out /tmp/app-release-signed.apk app/build/outputs/apk/release/app-release-unsigned.apk
             adb install -r /tmp/app-release-signed.apk
             adb install -r app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk
             adb shell am instrument -w -e class com.carlos.appcartao.ReceiptOcrInstrumentedTest com.carlos.appcartao.test/androidx.test.runner.AndroidJUnitRunner

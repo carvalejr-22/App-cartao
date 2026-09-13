@@ -23,12 +23,11 @@ android {
 
     buildTypes {
         debug {
-            // The debug APK stays minified so the OCR smoke test exercises the same R8 behavior
-            // that previously broke the release build, while remaining debuggable for instrumentation.
+            // Runtime smoke tests use a debuggable, unminified APK. Release remains minified below
+            // and is built separately in CI with the explicit ML Kit R8 keep rules.
             isDebuggable = true
-            isMinifyEnabled = true
-            isShrinkResources = true
-            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+            isMinifyEnabled = false
+            isShrinkResources = false
         }
         release {
             isDebuggable = false

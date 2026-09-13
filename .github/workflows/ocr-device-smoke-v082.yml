@@ -1,4 +1,4 @@
-name: OCR device smoke v0.8.5
+name: OCR release smoke v0.8.5
 
 on:
   push:
@@ -12,7 +12,7 @@ permissions:
   contents: read
 
 jobs:
-  ocr-smoke:
+  ocr-release-smoke:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -32,8 +32,8 @@ jobs:
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
-      # Runs the actual bundled ML Kit recognizer inside Android, not only JVM parser tests.
-      - name: Run real Android OCR initialization and recognition test
+      # Exercise the bundled OCR from the same minified release code path shipped to the phone.
+      - name: Run OCR against minified release APK on Android
         uses: reactivecircus/android-emulator-runner@v2
         with:
           api-level: 35
@@ -41,4 +41,12 @@ jobs:
           target: google_apis
           disable-animations: true
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
-          script: gradle --no-daemon :app:connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=com.carlos.appcartao.ReceiptOcrInstrumentedTest
+          script: |
+            set -euo pipefail
+            gradle --no-daemon :app:assembleRelease :app:assembleDebugAndroidTest
+            keytool -genkeypair -v -keystore /tmp/ocr-ci.jks -storepass android -keypass android -alias ocrci -keyalg RSA -keysize 2048 -validity 2 -dname "CN=OCR CI" >/dev/null 2>&1
+            APKSIGNER="$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -1)"
+            "$APKSIGNER" sign --ks /tmp/ocr-ci.jks --ks-pass pass:android --key-pass pass:android --out /tmp/app-release-signed.apk app/build/outputs/apk/release/app-release-unsigned.apk
+            adb install -r /tmp/app-release-signed.apk
+            adb install -r app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk
+            adb shell am instrument -w -e class com.carlos.appcartao.ReceiptOcrInstrumentedTest com.carlos.appcartao.test/androidx.test.runner.AndroidJUnitRunner

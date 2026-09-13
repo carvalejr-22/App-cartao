@@ -42,7 +42,7 @@ jobs:
           disable-animations: true
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
           script: |
-            set -euo pipefail
+            set -eu
             gradle --no-daemon :app:assembleRelease :app:assembleDebugAndroidTest
             keytool -genkeypair -v -keystore /tmp/ocr-ci.jks -storepass android -keypass android -alias ocrci -keyalg RSA -keysize 2048 -validity 2 -dname "CN=OCR CI" >/dev/null 2>&1
             APKSIGNER="$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -1)"

@@ -3,7 +3,11 @@ package com.carlos.appcartao
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Matrix
+import android.os.Handler
+import android.os.Looper
+import android.util.Log
 import androidx.exifinterface.media.ExifInterface
+import com.google.mlkit.common.MlKitException
 import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.text.TextRecognition
 import com.google.mlkit.vision.text.latin.TextRecognizerOptions
@@ -29,72 +33,114 @@ internal class ReceiptOcrScanner {
         callback: (ReceiptScanResult?, String?) -> Unit
     ) {
         val delivered = AtomicBoolean(false)
-        fun deliver(result: ReceiptScanResult?, message: String?) {
+        fun deliverEarly(result: ReceiptScanResult?, message: String?) {
             if (!delivered.compareAndSet(false, true)) return
             runCatching { callback(result, message) }
         }
 
         if (!file.exists() || file.length() <= 0L) {
-            deliver(null, "A câmera não gravou a foto corretamente. Tente novamente.")
+            deliverEarly(null, "A câmera não gravou a foto corretamente. Tente novamente.")
             return
         }
 
         val bitmap = try {
             decodeReceiptBitmap(file)
         } catch (_: OutOfMemoryError) {
-            deliver(null, "A foto ficou grande demais para ser processada. Tente novamente aproximando o comprovante.")
+            deliverEarly(null, "A foto ficou grande demais para ser processada. Tente novamente aproximando o comprovante.")
             return
         } catch (_: Exception) {
-            deliver(null, "Não foi possível abrir a foto do comprovante. Tente novamente.")
+            deliverEarly(null, "Não foi possível abrir a foto do comprovante. Tente novamente.")
             return
         }
 
         if (bitmap == null || bitmap.isRecycled) {
-            deliver(null, "Não foi possível abrir a foto do comprovante. Tente novamente.")
+            deliverEarly(null, "Não foi possível abrir a foto do comprovante. Tente novamente.")
             return
         }
 
         val recognizer = try {
             TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
-        } catch (_: Exception) {
+        } catch (error: Throwable) {
+            Log.e("ReceiptOcr", "TextRecognition.getClient failed", error)
             if (!bitmap.isRecycled) bitmap.recycle()
-            deliver(null, "O leitor de texto não iniciou corretamente. Feche e abra o app e tente de novo.")
+            deliverEarly(
+                null,
+                "O leitor de texto não iniciou corretamente. Atualize o Google Play Services e tente de novo."
+            )
             return
         }
 
-        try {
-            val image = InputImage.fromBitmap(bitmap, 0)
-            recognizer.process(image)
-                .addOnSuccessListener { recognized ->
-                    val text = recognized.text.orEmpty()
-                    if (text.isBlank()) {
-                        deliver(null, "Não encontrei texto legível. Aproxime a câmera, enquadre o comprovante inteiro e evite reflexos.")
-                        return@addOnSuccessListener
-                    }
-
-                    val result = runCatching { ReceiptParser.parse(text, categories) }.getOrNull()
-                    if (result == null) {
-                        deliver(null, "O comprovante foi fotografado, mas ocorreu um erro ao interpretar os dados. Tente novamente.")
-                    } else {
-                        deliver(result, null)
-                    }
-                }
-                .addOnFailureListener {
-                    deliver(null, "Não consegui ler o comprovante. Tente uma foto mais nítida.")
-                }
-                .addOnCompleteListener {
-                    runCatching { recognizer.close() }
-                    if (!bitmap.isRecycled) bitmap.recycle()
-                }
-        } catch (_: OutOfMemoryError) {
+        fun finish(result: ReceiptScanResult?, message: String?) {
+            if (!delivered.compareAndSet(false, true)) return
             runCatching { recognizer.close() }
             if (!bitmap.isRecycled) bitmap.recycle()
-            deliver(null, "A foto ficou grande demais para ser processada. Tente novamente aproximando o comprovante.")
-        } catch (_: Exception) {
-            runCatching { recognizer.close() }
-            if (!bitmap.isRecycled) bitmap.recycle()
-            deliver(null, "Não consegui iniciar a leitura da foto. Tente novamente.")
+            runCatching { callback(result, message) }
         }
+
+        val retryHandler = Handler(Looper.getMainLooper())
+        val maxModelRetries = 15
+        val retryDelayMillis = 2_000L
+
+        fun processAttempt(attempt: Int) {
+            if (delivered.get() || bitmap.isRecycled) return
+            try {
+                val image = InputImage.fromBitmap(bitmap, 0)
+                recognizer.process(image)
+                    .addOnSuccessListener { recognized ->
+                        val text = recognized.text.orEmpty()
+                        if (text.isBlank()) {
+                            finish(
+                                null,
+                                "Não encontrei texto legível. Aproxime a câmera, enquadre o comprovante inteiro e evite reflexos."
+                            )
+                            return@addOnSuccessListener
+                        }
+
+                        val result = runCatching { ReceiptParser.parse(text, categories) }.getOrNull()
+                        if (result == null) {
+                            finish(
+                                null,
+                                "O comprovante foi fotografado, mas ocorreu um erro ao interpretar os dados. Tente novamente."
+                            )
+                        } else {
+                            finish(result, null)
+                        }
+                    }
+                    .addOnFailureListener { error ->
+                        Log.w("ReceiptOcr", "OCR attempt ${attempt + 1} failed", error)
+                        val waitingForModel =
+                            error is MlKitException && error.errorCode == MlKitException.UNAVAILABLE
+
+                        // With the Google Play Services OCR runtime, the model is installed once on
+                        // the device. A first recognition request can arrive before that one-time
+                        // installation finishes, so keep the current photo in memory and retry for
+                        // up to ~30 seconds instead of making the user take the photo again.
+                        if (waitingForModel && attempt < maxModelRetries) {
+                            retryHandler.postDelayed(
+                                { processAttempt(attempt + 1) },
+                                retryDelayMillis
+                            )
+                        } else if (waitingForModel) {
+                            finish(
+                                null,
+                                "Na primeira leitura, o módulo de texto precisa ser preparado uma única vez. Conecte-se à internet por alguns instantes e tente novamente."
+                            )
+                        } else {
+                            finish(null, "Não consegui ler o comprovante. Tente uma foto mais nítida.")
+                        }
+                    }
+            } catch (_: OutOfMemoryError) {
+                finish(
+                    null,
+                    "A foto ficou grande demais para ser processada. Tente novamente aproximando o comprovante."
+                )
+            } catch (error: Throwable) {
+                Log.e("ReceiptOcr", "Failed to start OCR processing", error)
+                finish(null, "Não consegui iniciar a leitura da foto. Tente novamente.")
+            }
+        }
+
+        processAttempt(0)
     }
 
     private fun decodeReceiptBitmap(file: File): Bitmap? {
@@ -102,9 +148,7 @@ internal class ReceiptOcrScanner {
         BitmapFactory.decodeFile(file.absolutePath, bounds)
         if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
 
-        // Keep the image small enough for low-memory phones, but use ARGB_8888 because it is the
-        // most broadly supported bitmap format in the ML Kit image pipeline. The previous RGB_565
-        // optimization was more memory-efficient but proved less robust on some Android devices.
+        // Keep memory usage bounded while retaining enough detail for small receipt text.
         var sample = 1
         val maxSide = maxOf(bounds.outWidth, bounds.outHeight)
         while (maxSide / sample > 1800) sample *= 2

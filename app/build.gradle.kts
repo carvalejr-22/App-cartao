@@ -12,8 +12,8 @@ android {
         applicationId = "com.carlos.appcartao"
         minSdk = 26
         targetSdk = 36
-        versionCode = 15
-        versionName = "0.8.2"
+        versionCode = 16
+        versionName = "0.8.3"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
@@ -23,8 +23,7 @@ android {
 
     buildTypes {
         debug {
-            // Runtime smoke tests use a debuggable, unminified APK. Release remains minified below
-            // and is built separately in CI with the explicit ML Kit R8 keep rules.
+            // Runtime smoke tests use a debuggable, unminified APK.
             isDebuggable = true
             isMinifyEnabled = false
             isShrinkResources = false
@@ -54,7 +53,11 @@ dependencies {
     implementation("androidx.compose.material:material-icons-extended")
     implementation("androidx.work:work-runtime-ktx:2.11.2")
     implementation("androidx.exifinterface:exifinterface:1.4.1")
-    implementation("com.google.mlkit:text-recognition:16.0.1")
+
+    // OCR Latin via Google Play Services. This avoids packaging the old bundled native OCR
+    // runtime inside the APK and lets Play Services install/update the model once on device.
+    // After the model is present, receipt recognition works without continuous network access.
+    implementation("com.google.android.gms:play-services-mlkit-text-recognition:19.0.1")
 
     testImplementation("junit:junit:4.13.2")
     androidTestImplementation("androidx.test.ext:junit:1.2.1")
